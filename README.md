@@ -13,3 +13,26 @@
 ```bash
 pip install -r requirements.txt
 python main.py
+
+
+Откройте файл:
+
+text
+
+C:\WPy64-31700\python\Lib\site-packages\mujoco\__init__.py
+Найдите строку 239 (ту самую, где ошибка):
+
+Python
+
+_load_all_bundled_plugins()
+Замените её на:
+
+try:
+    _load_all_bundled_plugins()
+except OSError:
+    import warnings
+    warnings.warn(
+        "MuJoCo: не удалось загрузить некоторые плагины. "
+        "Базовая функциональность доступна.",
+        RuntimeWarning
+    )
