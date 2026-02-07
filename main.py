@@ -1,4 +1,7 @@
-# main.py — единственная точка входа
+# main.py
+
+import os
+os.environ["MUJOCO_GL"] = "egl"  # Безопасный рендеринг
 
 import sys
 from PyQt5.QtWidgets import QApplication
@@ -7,7 +10,7 @@ from logger import logger
 
 
 def main():
-    logger.add("Запуск GUI — Модуль А")
+    logger.add("Запуск GUI")
     app = QApplication(sys.argv)
     window = RobotControlGUI()
     window.show()
