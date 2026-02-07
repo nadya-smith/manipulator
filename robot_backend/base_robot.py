@@ -243,6 +243,18 @@ class BaseRobot(ABC):
             {"mode": ..., "state": ..., "model": ..., ...}
         """
         ...
+        
+    @abstractmethod
+    def get_camera_frame(self) -> Optional['np.ndarray']:
+        """Кадр с рабочей камеры (реальной или виртуальной)."""
+        ...
+
+    def get_overview_frame(self) -> Optional['np.ndarray']:
+        """
+        Обзорный 3D-вид сцены (только для симуляции).
+        По умолчанию возвращает None — реальный робот не имеет обзорной камеры.
+        """
+        return None        
 
     # ═══════════════════════════════════════════════════
     #  Утилитарные методы (общие)

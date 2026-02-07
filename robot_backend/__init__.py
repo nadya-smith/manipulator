@@ -2,8 +2,14 @@
 
 from .base_robot import BaseRobot, RobotMode, RobotState
 from .real_robot import RealRobot
-from .mujoco_robot import MuJoCoRobot
 from .robot_factory import RobotFactory
+
+# MuJoCo — опциональный
+try:
+    from .mujoco_robot import MuJoCoRobot, MUJOCO_AVAILABLE
+except (ImportError, OSError):
+    MuJoCoRobot = None
+    MUJOCO_AVAILABLE = False
 
 __all__ = [
     "BaseRobot",
@@ -12,4 +18,5 @@ __all__ = [
     "RealRobot",
     "MuJoCoRobot",
     "RobotFactory",
+    "MUJOCO_AVAILABLE",
 ]

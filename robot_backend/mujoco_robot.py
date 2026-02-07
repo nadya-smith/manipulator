@@ -3,7 +3,6 @@
 import numpy as np
 import threading
 import time
-import copy
 from typing import List, Optional
 from .base_robot import BaseRobot, RobotMode, RobotState
 from logger import logger
@@ -36,6 +35,7 @@ class MuJoCoRobot(BaseRobot):
       <worldbody>
         <geom type="plane" size="2 2 0.01" rgba="0.9 0.9 0.9 1"/>
         <light diffuse="0.8 0.8 0.8" pos="0 0 4" dir="0 0 -1"/>
+        <light diffuse="0.4 0.4 0.4" pos="2 -2 3" dir="-0.5 0.5 -1"/>
 
         <body name="base" pos="0 0 0.05">
           <geom type="cylinder" size="0.12 0.05" rgba="0.3 0.3 0.3 1"/>
@@ -91,6 +91,7 @@ class MuJoCoRobot(BaseRobot):
           </body>
         </body>
 
+        <!-- Объекты на сцене -->
         <body name="red_cube" pos="0.4 0.2 0.025">
           <freejoint/>
           <geom type="box" size="0.025 0.025 0.025" mass="0.1"
@@ -107,8 +108,16 @@ class MuJoCoRobot(BaseRobot):
                 rgba="0 0 1 1"/>
         </body>
 
-        <camera name="scene_camera" pos="1.2 -0.8 1.0"
-                xyaxes="0.6 0.8 0 -0.3 0.2 0.9"/>
+        <!-- ═══ Камера 1: обзорная (3D-вид сцены) ═══ -->
+        <camera name="overview_cam" pos="1.5 -1.0 1.2"
+                xyaxes="0.55 0.83 0 -0.3 0.2 0.93"
+                fovy="45"/>
+
+        <!-- ═══ Камера 2: рабочая (имитация реальной камеры над столом) ═══ -->
+        <camera name="work_cam" pos="0 0 1.5"
+                xyaxes="1 0 0 0 1 0"
+                fovy="60"/>
+
       </worldbody>
 
       <actuator>
@@ -160,22 +169,21 @@ class MuJoCoRobot(BaseRobot):
         self._mode = RobotMode.SIMULATION
         self._model = None
         self._data = None
-        self._renderer = None
-        self._viewer = None
-        self._viewer_thread = None
+
+        # ДВА рендерера для разных видов
+        self._renderer_overview = None   # 3D-обзор
+        self._renderer_workcam = None    # Рабочая камера
+
         self._sim_thread = None
         self._sim_running = False
-
-        # Главный лок — ВСЕ обращения к self._data через него
         self._lock = threading.Lock()
 
-        # Кэш для чтения из других потоков (обновляется в sim loop)
+        # Кэш
         self._cache_joint_pos = [0.0] * 6
         self._cache_joint_vel = [0.0] * 6
         self._cache_joint_frc = [0.0] * 6
         self._cache_tcp_pos = [0.0, 0.0, 0.0]
         self._cache_tcp_quat = [1.0, 0.0, 0.0, 0.0]
-        self._cache_site_xpos = None
 
         self._target_joints = list(self.HOME_POSITION)
         self._target_gripper = 0.0
@@ -190,10 +198,14 @@ class MuJoCoRobot(BaseRobot):
         self._tcp_pos_sensor_id = -1
         self._tcp_quat_sensor_id = -1
 
-        # Флаг: нужно ли рендерить кадр
-        self._render_requested = False
-        self._rendered_frame = None
-        self._render_event = threading.Event()
+        # Очереди рендер-запросов
+        self._overview_requested = False
+        self._overview_frame = None
+        self._overview_event = threading.Event()
+
+        self._workcam_requested = False
+        self._workcam_frame = None
+        self._workcam_event = threading.Event()
 
     # ── Свойства ─────────────────────────────────────
 
@@ -209,7 +221,7 @@ class MuJoCoRobot(BaseRobot):
 
     def connect(self, target: str = "", **kwargs) -> bool:
         if not MUJOCO_AVAILABLE:
-            logger.add("[MuJoCo] Библиотека недоступна!")
+            logger.add("[MuJoCo] Недоступен!")
             self._state = RobotState.ERROR
             return False
 
@@ -228,19 +240,14 @@ class MuJoCoRobot(BaseRobot):
             # Начальное положение
             for i, jid in enumerate(self._joint_actuator_ids):
                 self._data.ctrl[jid] = self.HOME_POSITION[i]
-
-            # Несколько шагов для стабилизации
             for _ in range(100):
                 mujoco.mj_step(self._model, self._data)
-
             self._update_cache()
 
-            # Рендерер — создаём только если нужно и в том же потоке
-            self._renderer = None
-            self._render_in_sim_thread = kwargs.get(
-                "enable_rendering", True)
+            # Рендереры создаются в потоке симуляции
+            self._create_renderers = kwargs.get("enable_rendering", True)
 
-            # Запуск потока симуляции
+            # Запуск
             self._sim_running = True
             self._emergency = False
             self._paused = False
@@ -248,19 +255,12 @@ class MuJoCoRobot(BaseRobot):
                 target=self._simulation_loop, daemon=True)
             self._sim_thread.start()
 
-            # Viewer НЕ запускаем автоматически — он конфликтует
-            # Используем рендеринг через get_camera_frame()
-            if kwargs.get("show_viewer", False):
-                logger.add(
-                    "[MuJoCo] 3D-viewer отключён для стабильности. "
-                    "Используйте виртуальную камеру в GUI.")
-
             self._state = RobotState.IDLE
             logger.add("[MuJoCo] Симуляция запущена")
             return True
 
         except Exception as e:
-            logger.add(f"[MuJoCo] Ошибка инициализации: {e}")
+            logger.add(f"[MuJoCo] Ошибка: {e}")
             import traceback
             logger.add(traceback.format_exc())
             self._state = RobotState.ERROR
@@ -271,7 +271,8 @@ class MuJoCoRobot(BaseRobot):
         if self._sim_thread:
             self._sim_thread.join(timeout=3.0)
             self._sim_thread = None
-        self._renderer = None
+        self._renderer_overview = None
+        self._renderer_workcam = None
         self._model = None
         self._data = None
         self._state = RobotState.DISCONNECTED
@@ -280,15 +281,15 @@ class MuJoCoRobot(BaseRobot):
     def _resolve_ids(self):
         self._joint_actuator_ids = []
         for i in range(1, 7):
-            aid = mujoco.mj_name2id(
-                self._model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"act_j{i}")
-            self._joint_actuator_ids.append(aid)
+            self._joint_actuator_ids.append(
+                mujoco.mj_name2id(
+                    self._model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"act_j{i}"))
 
         self._gripper_actuator_ids = []
         for name in ["act_gripper_l", "act_gripper_r"]:
-            aid = mujoco.mj_name2id(
-                self._model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
-            self._gripper_actuator_ids.append(aid)
+            self._gripper_actuator_ids.append(
+                mujoco.mj_name2id(
+                    self._model, mujoco.mjtObj.mjOBJ_ACTUATOR, name))
 
         self._joint_pos_sensor_ids = []
         self._joint_vel_sensor_ids = []
@@ -309,57 +310,42 @@ class MuJoCoRobot(BaseRobot):
         self._tcp_quat_sensor_id = mujoco.mj_name2id(
             self._model, mujoco.mjtObj.mjOBJ_SENSOR, "tcp_quat")
 
-    # ── Кэш данных (потокобезопасное чтение) ─────────
+    # ── Кэш ──────────────────────────────────────────
 
     def _update_cache(self):
-        """Копирует данные из mj_data в кэш. 
-        Вызывается ТОЛЬКО из потока симуляции под локом."""
         sd = self._data.sensordata
-
         for i, sid in enumerate(self._joint_pos_sensor_ids):
-            adr = self._model.sensor_adr[sid]
-            self._cache_joint_pos[i] = float(sd[adr])
-
+            self._cache_joint_pos[i] = float(sd[self._model.sensor_adr[sid]])
         for i, sid in enumerate(self._joint_vel_sensor_ids):
-            adr = self._model.sensor_adr[sid]
-            self._cache_joint_vel[i] = float(sd[adr])
-
+            self._cache_joint_vel[i] = float(sd[self._model.sensor_adr[sid]])
         for i, sid in enumerate(self._joint_frc_sensor_ids):
-            adr = self._model.sensor_adr[sid]
-            self._cache_joint_frc[i] = float(sd[adr])
+            self._cache_joint_frc[i] = float(sd[self._model.sensor_adr[sid]])
 
         pos_adr = self._model.sensor_adr[self._tcp_pos_sensor_id]
-        self._cache_tcp_pos = [
-            float(sd[pos_adr]),
-            float(sd[pos_adr + 1]),
-            float(sd[pos_adr + 2]),
-        ]
+        self._cache_tcp_pos = [float(sd[pos_adr + k]) for k in range(3)]
 
         quat_adr = self._model.sensor_adr[self._tcp_quat_sensor_id]
-        self._cache_tcp_quat = [
-            float(sd[quat_adr]),
-            float(sd[quat_adr + 1]),
-            float(sd[quat_adr + 2]),
-            float(sd[quat_adr + 3]),
-        ]
+        self._cache_tcp_quat = [float(sd[quat_adr + k]) for k in range(4)]
 
-    # ── Цикл симуляции (единственный поток с доступом к data) ──
+    # ── Цикл симуляции ───────────────────────────────
 
     def _simulation_loop(self):
         dt = self._model.opt.timestep
-        logger.add(f"[MuJoCo] Цикл, dt={dt:.4f}с")
+        logger.add(f"[MuJoCo] Цикл dt={dt:.4f}с")
 
-        # Рендерер создаём ЗДЕСЬ — в потоке симуляции
-        if self._render_in_sim_thread:
+        # Рендереры создаём ЗДЕСЬ — в потоке симуляции
+        if self._create_renderers:
             try:
-                self._renderer = mujoco.Renderer(
+                self._renderer_overview = mujoco.Renderer(
                     self._model, height=480, width=640)
-                logger.add("[MuJoCo] Рендерер создан")
+                self._renderer_workcam = mujoco.Renderer(
+                    self._model, height=480, width=640)
+                logger.add("[MuJoCo] Оба рендерера созданы")
             except Exception as e:
-                logger.add(f"[MuJoCo] Рендерер недоступен: {e}")
-                self._renderer = None
+                logger.add(f"[MuJoCo] Рендереры недоступны: {e}")
+                self._renderer_overview = None
+                self._renderer_workcam = None
 
-        steps_per_update = 5  # Обновляем кэш каждые N шагов
         step_count = 0
 
         while self._sim_running:
@@ -375,32 +361,70 @@ class MuJoCoRobot(BaseRobot):
                 for gid in self._gripper_actuator_ids:
                     self._data.ctrl[gid] = gripper_val
 
-                # Шаг физики
+                # Физика
                 mujoco.mj_step(self._model, self._data)
                 step_count += 1
 
-                # Обновляем кэш периодически
-                if step_count % steps_per_update == 0:
+                if step_count % 5 == 0:
                     self._update_cache()
 
-                # Рендеринг по запросу
-                if (self._render_requested and
-                        self._renderer is not None):
+                # ═══ Рендеринг обзорной камеры ═══
+                if (self._overview_requested
+                        and self._renderer_overview is not None):
                     try:
-                        self._renderer.update_scene(
-                            self._data, camera="scene_camera")
-                        rgb = self._renderer.render()
-                        self._rendered_frame = rgb[:, :, ::-1].copy()
-                    except Exception as e:
-                        self._rendered_frame = None
-                    self._render_requested = False
-                    self._render_event.set()
+                        self._renderer_overview.update_scene(
+                            self._data, camera="overview_cam")
+                        rgb = self._renderer_overview.render()
+                        self._overview_frame = rgb[:, :, ::-1].copy()
+                    except Exception:
+                        self._overview_frame = None
+                    self._overview_requested = False
+                    self._overview_event.set()
+
+                # ═══ Рендеринг рабочей камеры ═══
+                if (self._workcam_requested
+                        and self._renderer_workcam is not None):
+                    try:
+                        self._renderer_workcam.update_scene(
+                            self._data, camera="work_cam")
+                        rgb = self._renderer_workcam.render()
+                        self._workcam_frame = rgb[:, :, ::-1].copy()
+                    except Exception:
+                        self._workcam_frame = None
+                    self._workcam_requested = False
+                    self._workcam_event.set()
 
             time.sleep(dt)
 
-        logger.add("[MuJoCo] Цикл завершён")
+    # ── Два метода получения кадров ──────────────────
 
-    # ── Чтение состояния (из кэша — потокобезопасно) ──
+    def get_overview_frame(self) -> Optional[np.ndarray]:
+        """
+        Обзорный 3D-вид сцены (для таба "3D Симуляция").
+        Вид сбоку, видно весь робот и объекты.
+        """
+        if not self.is_connected or self._renderer_overview is None:
+            return None
+        self._overview_event.clear()
+        self._overview_requested = True
+        if self._overview_event.wait(timeout=0.2):
+            return self._overview_frame
+        return None
+
+    def get_camera_frame(self) -> Optional[np.ndarray]:
+        """
+        Рабочая камера (для таба "Камера + Детекция").
+        Вид сверху — имитация реальной камеры над столом.
+        """
+        if not self.is_connected or self._renderer_workcam is None:
+            return None
+        self._workcam_event.clear()
+        self._workcam_requested = True
+        if self._workcam_event.wait(timeout=0.2):
+            return self._workcam_frame
+        return None
+
+    # ── Чтение состояния ─────────────────────────────
 
     def get_joint_positions(self) -> List[float]:
         return list(self._cache_joint_pos)
@@ -473,21 +497,6 @@ class MuJoCoRobot(BaseRobot):
     def get_gripper(self) -> float:
         return self._gripper_state
 
-    # ── Камера (рендеринг в потоке симуляции) ─────────
-
-    def get_camera_frame(self) -> Optional[np.ndarray]:
-        """Запрашивает кадр у потока симуляции и ждёт результат."""
-        if not self.is_connected or self._renderer is None:
-            return None
-
-        self._render_event.clear()
-        self._render_requested = True
-
-        # Ждём пока поток симуляции отрендерит (макс 200мс)
-        if self._render_event.wait(timeout=0.2):
-            return self._rendered_frame
-        return None
-
     # ── Инфо ─────────────────────────────────────────
 
     def get_info(self) -> dict:
@@ -498,13 +507,13 @@ class MuJoCoRobot(BaseRobot):
             "connected": self.is_connected,
             "num_joints": self._num_joints,
             "sim_time": float(self._data.time) if self._data else 0.0,
+            "has_overview": self._renderer_overview is not None,
+            "has_workcam": self._renderer_workcam is not None,
         }
 
     # ── Утилиты ──────────────────────────────────────
 
-    def _wait_until_reached(self, target: List[float],
-                            tolerance: float = 0.02,
-                            timeout: float = 10.0):
+    def _wait_until_reached(self, target, tolerance=0.02, timeout=10.0):
         t0 = time.time()
         while time.time() - t0 < timeout:
             errors = [abs(c - t) for c, t in
@@ -514,13 +523,9 @@ class MuJoCoRobot(BaseRobot):
             time.sleep(0.02)
         return False
 
-    def _simple_ik(self, target_pos: np.ndarray,
-                   max_iter: int = 200, step: float = 0.5,
-                   tol: float = 0.005) -> bool:
-        """IK через Якобиан — выполняется в потоке симуляции."""
+    def _simple_ik(self, target_pos, max_iter=200, step=0.5, tol=0.005):
         site_id = mujoco.mj_name2id(
             self._model, mujoco.mjtObj.mjOBJ_SITE, "tcp")
-
         joint_dof_ids = []
         for i in range(1, 7):
             jid = mujoco.mj_name2id(
@@ -528,33 +533,24 @@ class MuJoCoRobot(BaseRobot):
             joint_dof_ids.append(self._model.jnt_dofadr[jid])
 
         for _ in range(max_iter):
-            # Читаем из кэша
             current_pos = np.array(self._cache_tcp_pos)
             error = target_pos - current_pos
             if np.linalg.norm(error) < tol:
                 return True
-
-            # Якобиан — нужен доступ к data
             jac_pos = np.zeros((3, self._model.nv))
             jac_rot = np.zeros((3, self._model.nv))
-
             with self._lock:
                 mujoco.mj_jacSite(
-                    self._model, self._data,
-                    jac_pos, jac_rot, site_id)
-
+                    self._model, self._data, jac_pos, jac_rot, site_id)
             J = jac_pos[:, joint_dof_ids]
             dq = step * np.linalg.pinv(J) @ error
-
             for i, di in enumerate(dq):
                 self._target_joints[i] += float(di)
-
             time.sleep(0.02)
-
         return False
 
     @staticmethod
-    def _quat_to_euler(quat: np.ndarray) -> np.ndarray:
+    def _quat_to_euler(quat):
         w, x, y, z = quat
         rx = np.arctan2(2*(w*x + y*z), 1 - 2*(x*x + y*y))
         sinp = np.clip(2*(w*y - z*x), -1.0, 1.0)
