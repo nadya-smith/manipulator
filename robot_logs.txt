@@ -1,24 +1,47 @@
-[20:45:20.085] Запуск GUI
-[20:45:33.041] [Фабрика] Создан робот: <MuJoCoRobot mode=simulation state=disconnected>
-[20:45:33.041] [MuJoCo] Встроенная модель
-[20:45:33.041] [MuJoCo] Цикл, dt=0.0020с
-[20:45:33.072] [MuJoCo] 3D-viewer отключён для стабильности. Используйте виртуальную камеру в GUI.
-[20:45:33.072] [MuJoCo] Симуляция запущена
-[20:45:33.072] Подключено: 🖥 MuJoCo симуляция
-[20:45:33.135] [MuJoCo] Рендерер создан
-[20:45:55.757] [MuJoCo] Цикл завершён
-[20:45:55.773] [MuJoCo] Остановлена
-[20:45:55.773] Робот отключён
-[20:45:58.665] [Фабрика] Создан робот: <MuJoCoRobot mode=simulation state=disconnected>
-[20:45:58.665] [MuJoCo] Встроенная модель
-[20:45:58.680] [MuJoCo] Цикл, dt=0.0020с
-[20:45:58.696] [MuJoCo] 3D-viewer отключён для стабильности. Используйте виртуальную камеру в GUI.
-[20:45:58.696] [MuJoCo] Симуляция запущена
-[20:45:58.696] Подключено: 🖥 MuJoCo симуляция
-[20:45:58.711] [MuJoCo] Рендерер создан
-[20:46:51.106] [Камера] Запуск: MuJoCo рендер
-[20:46:51.106] [Камера] Режим виртуальной камеры (MuJoCo)
-[20:51:22.175] [Камера] Отключена
-[20:51:22.177] [MuJoCo] Цикл завершён
-[20:51:22.177] [MuJoCo] Остановлена
-[20:51:22.177] GUI закрыт
+[20:24:36.716] [AS5600] Найдено портов: 4
+[20:24:55.010] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:24:55.010] [AS5600] Порт закрыт
+[20:24:55.011] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:24:55.011] [AS5600] Отключён
+[20:24:59.101] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:24:59.101] [AS5600] Порт закрыт
+[20:24:59.101] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:24:59.101] [AS5600] Отключён
+[20:25:05.488] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:25:05.488] [AS5600] Порт закрыт
+[20:25:05.489] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:25:05.489] [AS5600] Отключён
+[20:25:10.620] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:25:10.620] [AS5600] Порт закрыт
+[20:25:10.621] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:25:10.621] [AS5600] Отключён
+[20:25:33.197] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:25:33.197] [AS5600] Порт закрыт
+[20:25:33.198] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:25:33.198] [AS5600] Отключён
+[20:25:34.592] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:25:34.592] [AS5600] Порт закрыт
+[20:25:34.593] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:25:34.593] [AS5600] Отключён
+[20:25:42.621] Робот включён
+[20:25:45.219] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:25:45.219] [AS5600] Порт закрыт
+[20:25:45.220] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:25:45.220] [AS5600] Отключён
+[20:25:52.319] [AS5600] Подключён к COM34
+[20:25:52.319] [AS5600] Подключён: COM34
+[20:25:59.172] [AS5600] Порт закрыт
+[20:25:59.173] [AS5600] Отключён
+[20:26:05.332] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:26:05.332] [AS5600] Порт закрыт
+[20:26:05.332] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:26:05.333] [AS5600] Отключён
+[20:26:07.847] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:26:07.847] [AS5600] Порт закрыт
+[20:26:07.848] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:26:07.848] [AS5600] Отключён
+[20:26:09.124] [AS5600] Найдено портов: 4
+[20:26:10.238] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:26:10.238] [AS5600] Порт закрыт
+[20:26:10.239] [AS5600] Ошибка порта: Cannot configure port, something went wrong. Original message: PermissionError(13, 'Присоединенное к системе устройство не работает.', None, 31)
+[20:26:10.239] [AS5600] Отключён
