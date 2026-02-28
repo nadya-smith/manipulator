@@ -13,6 +13,7 @@ from PyQt5.QtGui import QPixmap, QImage, QColor, QFont
 
 from robot_backend import RobotFactory, RobotMode, RobotState, BaseRobot, MUJOCO_AVAILABLE
 from logger import logger
+from config import cfg                        # ← КОНФИГ
 
 # ═══════════════════════════════════════════════════════════════
 #  Попытка импорта pyserial для AS5600
@@ -31,23 +32,23 @@ except ImportError:
 class SensorReaderThread(QThread):
     """Читает данные AS5600 с Arduino через COM-порт."""
 
-    # Сигналы: градусы, raw, agc, magnitude, статус
     data_received = pyqtSignal(float, int, int, int, str)
-    connection_changed = pyqtSignal(bool, str)    # подключён?, сообщение
+    connection_changed = pyqtSignal(bool, str)
 
-    def __init__(self, port: str, baudrate: int = 115200, parent=None):
+    def __init__(self, port: str, baudrate: int = None, parent=None):
         super().__init__(parent)
         self.port = port
-        self.baudrate = baudrate
+        self.baudrate = baudrate or cfg.get("sensor.baudrate", 115200)
         self.running = False
+        self._prefix = cfg.get("sensor.protocol_prefix", "AS5600:")
+        self._wait_ms = cfg.get("sensor.wait_after_connect_ms", 4000)
 
     def run(self):
         self.running = True
         ser = None
         try:
             ser = serial.Serial(self.port, self.baudrate, timeout=0.5)
-            self.msleep(2000)                       # ждём сброс Arduino
-            # очищаем буфер после сброса
+            self.msleep(self._wait_ms)
             ser.reset_input_buffer()
             self.connection_changed.emit(True, f"Подключён: {self.port}")
             logger.add(f"[AS5600] Подключён к {self.port}")
@@ -80,12 +81,11 @@ class SensorReaderThread(QThread):
             self.connection_changed.emit(False, "Отключён")
             logger.add("[AS5600] Порт закрыт")
 
-    # Парсим строку вида   AS5600:180.25,2048,128,1856,OK
     def _parse(self, line: str):
-        if not line.startswith("AS5600:"):
+        if not line.startswith(self._prefix):
             return
         try:
-            parts = line[7:].split(",")
+            parts = line[len(self._prefix):].split(",")
             deg   = float(parts[0])
             raw   = int(parts[1])
             agc   = int(parts[2])
@@ -106,11 +106,11 @@ class SensorReaderThread(QThread):
 class SimRenderThread(QThread):
     frame_ready = pyqtSignal(np.ndarray)
 
-    def __init__(self, robot: BaseRobot, fps: int = 25, parent=None):
+    def __init__(self, robot: BaseRobot, fps: int = None, parent=None):
         super().__init__(parent)
         self.robot = robot
         self.running = False
-        self.fps = fps
+        self.fps = fps or cfg.get("mujoco.rendering.fps", 25)
 
     def run(self):
         self.running = True
@@ -136,31 +136,38 @@ class CameraThread(QThread):
     frame_ready = pyqtSignal(np.ndarray)
     detection_info = pyqtSignal(list)
 
-    COLOR_RANGES = {
-        "Красный": [
-            (np.array([0,   100, 100]), np.array([10,  255, 255])),
-            (np.array([160, 100, 100]), np.array([180, 255, 255])),
-        ],
-        "Зелёный": [(np.array([35, 80, 80]), np.array([85, 255, 255]))],
-        "Синий":   [(np.array([100, 80, 80]), np.array([130, 255, 255]))],
-        "Жёлтый":  [(np.array([20, 100, 100]), np.array([35, 255, 255]))],
-    }
-    DRAW_COLORS = {
-        "Красный": (0, 0, 255), "Зелёный": (0, 255, 0),
-        "Синий": (255, 0, 0),   "Жёлтый": (0, 255, 255),
-    }
-
     def __init__(self, camera_index=0, robot: BaseRobot = None, parent=None):
         super().__init__(parent)
         self.camera_index = camera_index
         self.robot = robot
         self.running = False
-        self.min_area = 500
-        self.enabled_colors = {c: True for c in self.COLOR_RANGES}
-        self.show_contours = True
-        self.show_bbox = True
         self.cap = None
-        self.use_virtual_camera = False
+
+        # ── Из конфига ──
+        self.min_area       = cfg.get("detection.min_area", 500)
+        self.show_contours  = cfg.get("detection.show_contours", True)
+        self.show_bbox      = cfg.get("detection.show_bounding_boxes", True)
+        self.frame_delay    = cfg.get("camera.frame_delay_ms", 30)
+        self.use_virtual_camera = cfg.get("camera.use_virtual", False)
+
+        proc = cfg.get("detection.processing", {})
+        bk = proc.get("blur_kernel", [5, 5])
+        self._blur_kernel   = (bk[0], bk[1])
+        self._morph_ksize   = proc.get("morph_kernel_size", 7)
+        self._morph_iters   = proc.get("morph_iterations", 2)
+
+        # ── Цвета из конфига ──
+        self.color_ranges   = {}   # name → [(lower, upper), …]
+        self.draw_colors    = {}   # name → (B, G, R)
+        self.enabled_colors = {}   # name → bool
+
+        for name, c_cfg in cfg.color_configs().items():
+            ranges = []
+            for r in c_cfg.get("hsv_ranges", []):
+                ranges.append((np.array(r["lower"]), np.array(r["upper"])))
+            self.color_ranges[name] = ranges
+            self.draw_colors[name]  = tuple(c_cfg.get("draw_bgr", [255, 255, 255]))
+            self.enabled_colors[name] = c_cfg.get("enabled", True)
 
     def set_min_area(self, area: int):
         self.min_area = area
@@ -194,7 +201,7 @@ class CameraThread(QThread):
                 self.frame_ready.emit(processed)
                 if detections:
                     self.detection_info.emit(detections)
-            self.msleep(30)
+            self.msleep(self.frame_delay)
         if self.cap:
             self.cap.release()
 
@@ -204,20 +211,22 @@ class CameraThread(QThread):
 
     def _process_frame(self, frame: np.ndarray):
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        hsv = cv2.GaussianBlur(hsv, (5, 5), 0)
+        hsv = cv2.GaussianBlur(hsv, self._blur_kernel, 0)
         detections = []
         overlay = frame.copy()
-        for color_name, ranges in self.COLOR_RANGES.items():
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (self._morph_ksize, self._morph_ksize))
+
+        for color_name, ranges in self.color_ranges.items():
             if not self.enabled_colors.get(color_name, False):
                 continue
             mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
             for lower, upper in ranges:
                 mask |= cv2.inRange(hsv, lower, upper)
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel, iterations=self._morph_iters)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=self._morph_iters)
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            draw_color = self.DRAW_COLORS[color_name]
+            draw_color = self.draw_colors[color_name]
             for cnt in contours:
                 area = cv2.contourArea(cnt)
                 if area < self.min_area:
@@ -250,15 +259,21 @@ class RobotControlGUI(QMainWindow):
         self.camera_thread = None
         self.sim_render_thread = None
 
-        # ── Состояние AS5600 ──────────────────────────
+        # ── AS5600 ────────────────────────────
         self.sensor_thread: SensorReaderThread = None
-        self.sensor_current_deg  = 0.0      # текущий угол (градусы)
-        self.sensor_smoothed_deg = 0.0      # сглаженный угол
-        self.sensor_zero_offset  = 0.0      # «ноль» датчика
+        self.sensor_current_deg  = 0.0
+        self.sensor_smoothed_deg = 0.0
+        self.sensor_zero_offset  = 0.0
         self.sensor_connected    = False
 
-        self.setWindowTitle("Управление роботом — Реальный / MuJoCo + AS5600")
-        self.setGeometry(100, 100, 1550, 1050)
+        self.setWindowTitle(cfg.get("application.window_title",
+                                    "Управление роботом"))
+        self.setGeometry(
+            cfg.get("application.window_x", 100),
+            cfg.get("application.window_y", 100),
+            cfg.get("application.window_width", 1550),
+            cfg.get("application.window_height", 1050),
+        )
         self.init_ui()
         self.setup_timer()
 
@@ -270,6 +285,13 @@ class RobotControlGUI(QMainWindow):
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
 
+        mono_font  = cfg.get("gui.font_monospace", "Consolas")
+        font_size  = cfg.get("gui.font_size", 13)
+        joint_names = cfg.joint_names()
+        axis_labels = cfg.get("gui.axis_labels",
+                              ["J1/X", "J2/Y", "J3/Z", "J4/Rx", "J5/Ry", "J6/Rz"])
+        tcp_labels  = cfg.get("gui.tcp_labels", ["X", "Y", "Z", "Rx", "Ry", "Rz"])
+
         # ════════════ ЛЕВАЯ ПАНЕЛЬ ════════════
         left_panel = QVBoxLayout()
         main_layout.addLayout(left_panel, 2)
@@ -279,6 +301,21 @@ class RobotControlGUI(QMainWindow):
         mode_group.setStyleSheet("QGroupBox { font-weight: bold; font-size: 14px; }")
         mode_layout = QVBoxLayout()
 
+        # ╔══════════════════════════════════════════════════════╗
+        # ║  ВАЖНО: создаём conn_target_edit ДО подключения     ║
+        # ║  сигнала currentIndexChanged, чтобы избежать        ║
+        # ║  AttributeError при setCurrentIndex()               ║
+        # ╚══════════════════════════════════════════════════════╝
+
+        # --- Сначала создаём поле ввода цели ---
+        conn_row = QHBoxLayout()
+        default_port = cfg.get("robot.real.port", "COM39")
+        self.conn_target_edit = QLineEdit(default_port)
+        self.conn_target_edit.setPlaceholderText("COM-порт или путь к XML")
+        conn_row.addWidget(QLabel("Цель:"))
+        conn_row.addWidget(self.conn_target_edit)
+
+        # --- Затем создаём селектор режима ---
         mode_row = QHBoxLayout()
         self.mode_selector = QComboBox()
         self.mode_selector.addItem("🤖 Реальный робот (MCX)")
@@ -287,31 +324,34 @@ class RobotControlGUI(QMainWindow):
         else:
             self.mode_selector.addItem("🖥 MuJoCo ⚠ НЕДОСТУПНА")
             self.mode_selector.model().item(1).setEnabled(False)
-        self.mode_selector.setStyleSheet("font-size: 13px; padding: 5px;")
+        self.mode_selector.setStyleSheet(f"font-size: {font_size}px; padding: 5px;")
         mode_row.addWidget(QLabel("Режим:"))
         mode_row.addWidget(self.mode_selector)
-        mode_layout.addLayout(mode_row)
+
+        # --- Подключаем сигнал ПОСЛЕ создания обоих виджетов ---
         self.mode_selector.currentIndexChanged.connect(self._on_mode_selector_changed)
 
-        conn_row = QHBoxLayout()
-        self.conn_target_edit = QLineEdit("COM39")
-        self.conn_target_edit.setPlaceholderText("COM-порт или путь к XML")
-        conn_row.addWidget(QLabel("Цель:"))
-        conn_row.addWidget(self.conn_target_edit)
+        # --- Теперь безопасно устанавливаем режим из конфига ---
+        default_mode = cfg.get("robot.default_mode", "simulation")
+        if default_mode == "simulation" and MUJOCO_AVAILABLE:
+            self.mode_selector.setCurrentIndex(1)
+        # conn_target_edit уже обновится через сигнал
+
+        # --- Добавляем в layout в правильном порядке ---
+        mode_layout.addLayout(mode_row)
         mode_layout.addLayout(conn_row)
 
+        # --- Остальное без изменений ---
         conn_btns = QHBoxLayout()
         self.btn_connect = QPushButton("🔌 Подключить")
         self.btn_connect.setStyleSheet(
             "background-color: #2196F3; color: white; font-weight: bold; padding: 10px;")
         self.btn_connect.clicked.connect(self.connect_robot)
-
         self.btn_disconnect = QPushButton("🔌 Отключить")
         self.btn_disconnect.setStyleSheet(
             "background-color: #757575; color: white; font-weight: bold; padding: 10px;")
         self.btn_disconnect.clicked.connect(self.disconnect_robot)
         self.btn_disconnect.setEnabled(False)
-
         conn_btns.addWidget(self.btn_connect)
         conn_btns.addWidget(self.btn_disconnect)
         mode_layout.addLayout(conn_btns)
@@ -324,17 +364,18 @@ class RobotControlGUI(QMainWindow):
         mode_group.setLayout(mode_layout)
         left_panel.addWidget(mode_group)
 
+        # ── дальше всё без изменений: Кнопки управления, Ручное управление и т.д. ──
+        # ...
+
         # ── Кнопки управления ─────────────────
         ctrl_group = QGroupBox("Управление")
         ctrl_layout = QGridLayout()
-
         self.btn_on        = QPushButton("ВКЛ")
         self.btn_off       = QPushButton("ВЫКЛ")
         self.btn_pause     = QPushButton("ПАУЗА")
         self.btn_resume    = QPushButton("ПРОДОЛЖИТЬ")
         self.btn_emergency = QPushButton("⛔ СТОП")
         self.btn_home      = QPushButton("🏠 HOME")
-
         self.btn_on.setStyleSheet(
             "background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
         self.btn_emergency.setStyleSheet(
@@ -343,7 +384,6 @@ class RobotControlGUI(QMainWindow):
             "background-color: #FF9800; color: white; font-weight: bold; padding: 8px;")
         for btn in [self.btn_off, self.btn_pause, self.btn_resume]:
             btn.setStyleSheet("font-weight: bold; padding: 8px;")
-
         ctrl_layout.addWidget(self.btn_on,        0, 0)
         ctrl_layout.addWidget(self.btn_off,       0, 1)
         ctrl_layout.addWidget(self.btn_pause,     1, 0)
@@ -352,7 +392,6 @@ class RobotControlGUI(QMainWindow):
         ctrl_layout.addWidget(self.btn_emergency, 2, 1)
         ctrl_group.setLayout(ctrl_layout)
         left_panel.addWidget(ctrl_group)
-
         self.btn_on.clicked.connect(lambda: logger.add("Робот включён"))
         self.btn_off.clicked.connect(self._on_btn_off)
         self.btn_pause.clicked.connect(lambda: self._safe_call(lambda: self.robot.pause()))
@@ -364,21 +403,23 @@ class RobotControlGUI(QMainWindow):
         joy_group = QGroupBox("Ручное управление")
         joy_layout = QGridLayout()
 
+        default_move = cfg.get("robot.movement.default_mode", "MoveJ")
         self.move_mode_combo = QComboBox()
         self.move_mode_combo.addItems(["MoveJ (по суставам)", "MoveL (линейно)"])
+        if default_move == "MoveL":
+            self.move_mode_combo.setCurrentIndex(1)
         joy_layout.addWidget(QLabel("Режим:"), 0, 0)
         joy_layout.addWidget(self.move_mode_combo, 0, 1, 1, 3)
 
         self.step_spin = QSpinBox()
         self.step_spin.setRange(1, 50)
-        self.step_spin.setValue(5)
+        self.step_spin.setValue(cfg.get("robot.movement.default_step", 5))
         self.step_spin.setSuffix(" (шаг)")
         joy_layout.addWidget(QLabel("Шаг:"), 1, 0)
         joy_layout.addWidget(self.step_spin, 1, 1, 1, 3)
 
-        axes = ["J1/X", "J2/Y", "J3/Z", "J4/Rx", "J5/Ry", "J6/Rz"]
         self.joy_val_labels = []
-        for i, name in enumerate(axes):
+        for i, name in enumerate(axis_labels):
             btn_minus = QPushButton("−")
             btn_minus.setFixedWidth(40)
             val_lbl = QLabel("0.00")
@@ -395,7 +436,6 @@ class RobotControlGUI(QMainWindow):
             joy_layout.addWidget(btn_minus,    i+2, 1)
             joy_layout.addWidget(val_lbl,      i+2, 2)
             joy_layout.addWidget(btn_plus,     i+2, 3)
-
         joy_group.setLayout(joy_layout)
         left_panel.addWidget(joy_group)
 
@@ -412,17 +452,16 @@ class RobotControlGUI(QMainWindow):
         left_panel.addWidget(grip_group)
 
         # ══════════════════════════════════════════════
-        #  ▼▼▼  НОВОЕ: Блок AS5600 датчика  ▼▼▼
+        #  Блок AS5600 датчика
         # ══════════════════════════════════════════════
         sensor_group = QGroupBox("🔄 AS5600 — Датчик поворота")
         sensor_group.setStyleSheet(
             "QGroupBox { font-weight: bold; font-size: 13px; }")
         sensor_layout = QVBoxLayout()
 
-        # Строка 1: выбор COM-порта и кнопки подключения
+        # COM-порт
         s_conn_row = QHBoxLayout()
         s_conn_row.addWidget(QLabel("Порт:"))
-
         self.sensor_port_combo = QComboBox()
         self.sensor_port_combo.setEditable(True)
         self.sensor_port_combo.setMinimumWidth(120)
@@ -439,34 +478,29 @@ class RobotControlGUI(QMainWindow):
             "background-color: #4CAF50; color: white; font-weight: bold; padding: 5px;")
         self.btn_sensor_connect.clicked.connect(self.connect_sensor)
         s_conn_row.addWidget(self.btn_sensor_connect)
-
         self.btn_sensor_disconnect = QPushButton("■ Откл.")
         self.btn_sensor_disconnect.setStyleSheet("padding: 5px;")
         self.btn_sensor_disconnect.clicked.connect(self.disconnect_sensor)
         self.btn_sensor_disconnect.setEnabled(False)
         s_conn_row.addWidget(self.btn_sensor_disconnect)
-
         sensor_layout.addLayout(s_conn_row)
 
-        # Строка 2: текущий угол — крупно
+        # Угол
         self.sensor_angle_label = QLabel("Угол: —")
         self.sensor_angle_label.setAlignment(Qt.AlignCenter)
         self.sensor_angle_label.setStyleSheet(
-            "font-family: Consolas; font-size: 22px; font-weight: bold; "
-            "background-color: #1a1a2e; color: #0f0; padding: 8px; border-radius: 4px;")
+            f"font-family: {mono_font}; font-size: 22px; font-weight: bold; "
+            f"background-color: #1a1a2e; color: #0f0; padding: 8px; border-radius: 4px;")
         sensor_layout.addWidget(self.sensor_angle_label)
 
-        # Строка 3: подробности (RAW, AGC, MAG, статус магнита)
         self.sensor_detail_label = QLabel("RAW: —   AGC: —   MAG: —   Магнит: —")
         self.sensor_detail_label.setStyleSheet(
-            "font-family: Consolas; font-size: 11px; color: #888;")
+            f"font-family: {mono_font}; font-size: 11px; color: #888;")
         sensor_layout.addWidget(self.sensor_detail_label)
 
-        # Строка 4: индикатор-полоска угла 0..360
         self.sensor_bar = QProgressBar()
-        self.sensor_bar.setRange(0, 3600)          # ×10 для точности
+        self.sensor_bar.setRange(0, 3600)
         self.sensor_bar.setValue(0)
-        self.sensor_bar.setFormat("%v / 10 °")
         self.sensor_bar.setTextVisible(False)
         self.sensor_bar.setFixedHeight(12)
         self.sensor_bar.setStyleSheet("""
@@ -476,77 +510,63 @@ class RobotControlGUI(QMainWindow):
         """)
         sensor_layout.addWidget(self.sensor_bar)
 
-        # ── Разделитель ──
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setStyleSheet("color: #555;")
+        line = QFrame(); line.setFrameShape(QFrame.HLine); line.setStyleSheet("color: #555;")
         sensor_layout.addWidget(line)
 
-        # Строка 5: выбор сустава + вкл/выкл управления
+        # Маппинг сустава
         s_map_row = QHBoxLayout()
         s_map_row.addWidget(QLabel("Сустав:"))
         self.sensor_joint_combo = QComboBox()
-        self.sensor_joint_combo.addItems(["J1", "J2", "J3", "J4", "J5", "J6"])
-        self.sensor_joint_combo.setToolTip("Какой сустав робота вращать датчиком")
+        self.sensor_joint_combo.addItems(joint_names)
+        default_joint = cfg.get("sensor.defaults.joint_index", 0)
+        if 0 <= default_joint < len(joint_names):
+            self.sensor_joint_combo.setCurrentIndex(default_joint)
         s_map_row.addWidget(self.sensor_joint_combo)
 
         self.chk_sensor_enable = QCheckBox("Управление ВКЛ")
         self.chk_sensor_enable.setStyleSheet("font-weight: bold; color: #2196F3;")
-        self.chk_sensor_enable.setToolTip(
-            "Если включено — поворот датчика вращает выбранный сустав робота")
         s_map_row.addWidget(self.chk_sensor_enable)
         s_map_row.addStretch()
         sensor_layout.addLayout(s_map_row)
 
-        # Строка 6: Установка нуля + масштаб + инверсия
+        # Калибровка
         s_cal_row = QHBoxLayout()
-
         self.btn_set_zero = QPushButton("⓪ Уст. ноль")
-        self.btn_set_zero.setToolTip(
-            "Текущий угол датчика = 0° для сустава")
         self.btn_set_zero.clicked.connect(self._set_sensor_zero)
         s_cal_row.addWidget(self.btn_set_zero)
 
         s_cal_row.addWidget(QLabel("Масштаб:"))
         self.sensor_scale_spin = QDoubleSpinBox()
         self.sensor_scale_spin.setRange(0.05, 10.0)
-        self.sensor_scale_spin.setValue(1.0)
+        self.sensor_scale_spin.setValue(cfg.get("sensor.defaults.scale", 1.0))
         self.sensor_scale_spin.setSingleStep(0.1)
-        self.sensor_scale_spin.setToolTip(
-            "1.0 = 1° датчика → 1° сустава\n"
-            "0.5 = 2° датчика → 1° сустава (точнее)\n"
-            "2.0 = 1° датчика → 2° сустава (быстрее)")
         s_cal_row.addWidget(self.sensor_scale_spin)
 
         self.chk_sensor_invert = QCheckBox("Инверт.")
-        self.chk_sensor_invert.setToolTip("Поменять направление вращения")
+        self.chk_sensor_invert.setChecked(cfg.get("sensor.defaults.invert", False))
         s_cal_row.addWidget(self.chk_sensor_invert)
         sensor_layout.addLayout(s_cal_row)
 
-        # Строка 7: сглаживание
+        # Сглаживание
+        smoothing_pct = int(cfg.get("sensor.defaults.smoothing", 0.30) * 100)
         s_smooth_row = QHBoxLayout()
         s_smooth_row.addWidget(QLabel("Сглаживание:"))
         self.sensor_smooth_slider = QSlider(Qt.Horizontal)
         self.sensor_smooth_slider.setRange(1, 99)
-        self.sensor_smooth_slider.setValue(30)
-        self.sensor_smooth_slider.setToolTip(
-            "Меньше = плавнее (но медленнее реакция)\n"
-            "Больше = резче (но точнее повторяет)")
+        self.sensor_smooth_slider.setValue(smoothing_pct)
         s_smooth_row.addWidget(self.sensor_smooth_slider)
-        self.sensor_smooth_val = QLabel("0.30")
+        self.sensor_smooth_val = QLabel(f"{smoothing_pct/100:.2f}")
         self.sensor_smooth_val.setFixedWidth(35)
         self.sensor_smooth_slider.valueChanged.connect(
             lambda v: self.sensor_smooth_val.setText(f"{v/100:.2f}"))
         s_smooth_row.addWidget(self.sensor_smooth_val)
         sensor_layout.addLayout(s_smooth_row)
 
-        # Строка 8: отображение нуля и вычисленного угла сустава
         self.sensor_mapping_label = QLabel("Ноль: 0.0°  →  Сустав: 0.0°")
         self.sensor_mapping_label.setStyleSheet(
-            "font-family: Consolas; font-size: 11px; color: #aaa;")
+            f"font-family: {mono_font}; font-size: 11px; color: #aaa;")
         sensor_layout.addWidget(self.sensor_mapping_label)
 
-        # Если pyserial не установлен — покажем предупреждение
         if not SERIAL_AVAILABLE:
             warn = QLabel("⚠ pip install pyserial — для работы датчика")
             warn.setStyleSheet("color: #f44336; font-weight: bold;")
@@ -555,18 +575,18 @@ class RobotControlGUI(QMainWindow):
 
         sensor_group.setLayout(sensor_layout)
         left_panel.addWidget(sensor_group)
-
-        # Заполним список портов при старте
         self._refresh_sensor_ports()
-        # ══════════════════════════════════════════════
-        #  ▲▲▲  КОНЕЦ БЛОКА AS5600  ▲▲▲
-        # ══════════════════════════════════════════════
+
+        # Загрузить калибровку энкодера для выбранного сустава
+        self.sensor_joint_combo.currentIndexChanged.connect(self._on_joint_combo_changed)
+        self._on_joint_combo_changed(self.sensor_joint_combo.currentIndex())
 
         # ── Статус ────────────────────────────
         self.status_label = QLabel("НЕ ПОДКЛЮЧЕНО")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setStyleSheet(
-            "background-color: gray; color: white; font-size: 22px; font-weight: bold; padding: 15px;")
+            "background-color: gray; color: white; font-size: 22px; "
+            "font-weight: bold; padding: 15px;")
         left_panel.addWidget(self.status_label)
 
         # ════════════ ПРАВАЯ ПАНЕЛЬ ════════════
@@ -577,10 +597,10 @@ class RobotControlGUI(QMainWindow):
         pos_group = QGroupBox("Текущая поза TCP")
         pos_layout = QGridLayout()
         self.pos_labels = []
-        for i, name in enumerate(["X", "Y", "Z", "Rx", "Ry", "Rz"]):
+        for i, name in enumerate(tcp_labels):
             pos_layout.addWidget(QLabel(f"{name}:"), i // 3, (i % 3) * 2)
             lbl = QLabel("0.000")
-            lbl.setStyleSheet("font-family: Consolas; font-size: 13px;")
+            lbl.setStyleSheet(f"font-family: {mono_font}; font-size: {font_size}px;")
             pos_layout.addWidget(lbl, i // 3, (i % 3) * 2 + 1)
             self.pos_labels.append(lbl)
         pos_group.setLayout(pos_layout)
@@ -590,35 +610,38 @@ class RobotControlGUI(QMainWindow):
         self.torque_group = QGroupBox("Моменты (Н·м)")
         torque_layout = QGridLayout()
         self.torque_labels = []
-        for i in range(6):
-            torque_layout.addWidget(QLabel(f"J{i+1}:"), i // 3, (i % 3) * 2)
+        for i in range(cfg.joint_count()):
+            torque_layout.addWidget(QLabel(f"{joint_names[i]}:"), i // 3, (i % 3) * 2)
             lbl = QLabel("0.000")
-            lbl.setStyleSheet("font-family: Consolas;")
+            lbl.setStyleSheet(f"font-family: {mono_font};")
             torque_layout.addWidget(lbl, i // 3, (i % 3) * 2 + 1)
             self.torque_labels.append(lbl)
         self.torque_group.setLayout(torque_layout)
         self.torque_group.setVisible(False)
         right_panel.addWidget(self.torque_group)
 
-        # ── Табы: 3D-вид / Камера ─────────────
+        # ── Табы: 3D / Камера ─────────────────
         self.view_tabs = QTabWidget()
-        self.view_tabs.setStyleSheet("font-size: 13px;")
+        self.view_tabs.setStyleSheet(f"font-size: {font_size}px;")
 
-        # Таб 1: 3D
+        # 3D-вид
         sim_tab = QWidget()
         sim_layout = QVBoxLayout(sim_tab)
         self.sim_view_label = QLabel("Подключите MuJoCo для 3D-визуализации")
-        self.sim_view_label.setMinimumSize(640, 480)
+        self.sim_view_label.setMinimumSize(
+            cfg.get("mujoco.rendering.width", 640),
+            cfg.get("mujoco.rendering.height", 480))
         self.sim_view_label.setStyleSheet(
             "background-color: #1a1a2e; color: #aaa; font-size: 16px;")
         self.sim_view_label.setAlignment(Qt.AlignCenter)
         sim_layout.addWidget(self.sim_view_label)
         self.sim_info_label = QLabel("")
-        self.sim_info_label.setStyleSheet("font-family: Consolas; font-size: 12px; padding: 4px;")
+        self.sim_info_label.setStyleSheet(
+            f"font-family: {mono_font}; font-size: 12px; padding: 4px;")
         sim_layout.addWidget(self.sim_info_label)
         self.view_tabs.addTab(sim_tab, "🖥 3D Симуляция")
 
-        # Таб 2: Камера
+        # Камера
         cam_tab = QWidget()
         cam_layout = QVBoxLayout(cam_tab)
 
@@ -626,8 +649,10 @@ class RobotControlGUI(QMainWindow):
         cam_settings.addWidget(QLabel("Камера:"))
         self.cam_index_spin = QSpinBox()
         self.cam_index_spin.setRange(0, 10)
+        self.cam_index_spin.setValue(cfg.get("camera.default_index", 0))
         cam_settings.addWidget(self.cam_index_spin)
         self.chk_virtual_cam = QCheckBox("Виртуальная (MuJoCo)")
+        self.chk_virtual_cam.setChecked(cfg.get("camera.use_virtual", False))
         cam_settings.addWidget(self.chk_virtual_cam)
         self.btn_cam_start = QPushButton("▶ Старт")
         self.btn_cam_start.setStyleSheet(
@@ -645,15 +670,17 @@ class RobotControlGUI(QMainWindow):
         det_settings.addWidget(QLabel("Мин.площадь:"))
         self.min_area_spin = QSpinBox()
         self.min_area_spin.setRange(50, 50000)
-        self.min_area_spin.setValue(500)
+        self.min_area_spin.setValue(cfg.get("detection.min_area", 500))
         self.min_area_spin.setSingleStep(100)
         self.min_area_spin.valueChanged.connect(self._on_min_area_changed)
         det_settings.addWidget(self.min_area_spin)
+
         self.color_checks = {}
-        for color_name, draw_clr in CameraThread.DRAW_COLORS.items():
+        for color_name, color_data in cfg.color_configs().items():
+            bgr = color_data.get("draw_bgr", [255, 255, 255])
             cb = QCheckBox(color_name)
-            cb.setChecked(True)
-            r, g, b = draw_clr[2], draw_clr[1], draw_clr[0]
+            cb.setChecked(color_data.get("enabled", True))
+            r, g, b = bgr[2], bgr[1], bgr[0]
             cb.setStyleSheet(f"color: rgb({r},{g},{b}); font-weight: bold;")
             cb.stateChanged.connect(lambda state, cn=color_name: self._on_color_toggle(cn, state))
             det_settings.addWidget(cb)
@@ -669,10 +696,10 @@ class RobotControlGUI(QMainWindow):
         cam_layout.addWidget(self.video_label)
 
         self.detection_label = QLabel("Объекты: —")
-        self.detection_label.setStyleSheet("font-family: Consolas; font-size: 12px;")
+        self.detection_label.setStyleSheet(
+            f"font-family: {mono_font}; font-size: 12px;")
         self.detection_label.setWordWrap(True)
         cam_layout.addWidget(self.detection_label)
-
         self.view_tabs.addTab(cam_tab, "📷 Камера + Детекция")
         right_panel.addWidget(self.view_tabs)
 
@@ -684,7 +711,7 @@ class RobotControlGUI(QMainWindow):
         self.log_view.setMaximumHeight(120)
         log_layout.addWidget(self.log_view)
         save_row = QHBoxLayout()
-        self.path_edit = QLineEdit("robot_logs.txt")
+        self.path_edit = QLineEdit(cfg.get("logging.file", "robot_logs.txt"))
         btn_save = QPushButton("Сохранить")
         btn_save.clicked.connect(self.save_logs)
         save_row.addWidget(self.path_edit)
@@ -728,9 +755,7 @@ class RobotControlGUI(QMainWindow):
             logger.add(f"Ошибка: {e}")
 
     def disconnect_robot(self):
-        # Отключаем управление датчиком (сам датчик остаётся)
         self.chk_sensor_enable.setChecked(False)
-
         self._stop_sim_render()
         self.stop_camera()
         if self.robot:
@@ -741,7 +766,8 @@ class RobotControlGUI(QMainWindow):
         self.mode_selector.setEnabled(True)
         self.mode_indicator.setText("Не подключено")
         self.mode_indicator.setStyleSheet(
-            "background-color: #666; color: white; font-size: 13px; padding: 8px; border-radius: 4px;")
+            "background-color: #666; color: white; font-size: 13px; "
+            "padding: 8px; border-radius: 4px;")
         self.status_label.setText("НЕ ПОДКЛЮЧЕНО")
         self.status_label.setStyleSheet(
             "background-color: gray; color: white; font-size: 22px; padding: 15px;")
@@ -751,10 +777,10 @@ class RobotControlGUI(QMainWindow):
 
     def _on_mode_selector_changed(self, index):
         if index == 0:
-            self.conn_target_edit.setText("COM39")
+            self.conn_target_edit.setText(cfg.get("robot.real.port", "COM39"))
             self.conn_target_edit.setPlaceholderText("COM-порт")
         else:
-            self.conn_target_edit.setText("")
+            self.conn_target_edit.setText(cfg.get("robot.simulation.xml_path", ""))
             self.conn_target_edit.setPlaceholderText("Путь к XML (пусто = встроенная)")
 
     # ══════════════════════════════════════════════════════════
@@ -763,7 +789,7 @@ class RobotControlGUI(QMainWindow):
     def _start_sim_render(self):
         if self.sim_render_thread:
             self._stop_sim_render()
-        self.sim_render_thread = SimRenderThread(robot=self.robot, fps=25, parent=self)
+        self.sim_render_thread = SimRenderThread(robot=self.robot, parent=self)
         self.sim_render_thread.frame_ready.connect(self._display_sim_frame)
         self.sim_render_thread.start()
         logger.add("[GUI] 3D-визуализация запущена")
@@ -788,7 +814,7 @@ class RobotControlGUI(QMainWindow):
                 f"Состояние: {info.get('state', '?')}")
 
     # ══════════════════════════════════════════════════════════
-    #  Камера (реальная / виртуальная)
+    #  Камера
     # ══════════════════════════════════════════════════════════
     def start_camera(self):
         if self.camera_thread and self.camera_thread.isRunning():
@@ -844,95 +870,86 @@ class RobotControlGUI(QMainWindow):
             self.camera_thread.set_color_enabled(color_name, state == Qt.Checked)
 
     # ══════════════════════════════════════════════════════════
-    #  ▼▼▼  НОВОЕ: Методы AS5600  ▼▼▼
+    #  AS5600
     # ══════════════════════════════════════════════════════════
 
     def _refresh_sensor_ports(self):
-        """Обновляет выпадающий список доступных COM-портов."""
         if not SERIAL_AVAILABLE:
             return
         current = self.sensor_port_combo.currentText()
         self.sensor_port_combo.clear()
-
         ports = serial.tools.list_ports.comports()
         for p in sorted(ports, key=lambda x: x.device):
-            self.sensor_port_combo.addItem(
-                f"{p.device}", userData=p.device)
-
+            self.sensor_port_combo.addItem(f"{p.device}", userData=p.device)
         if self.sensor_port_combo.count() == 0:
-            self.sensor_port_combo.addItem("COM3")
-
-        # Пытаемся восстановить предыдущий выбор
+            self.sensor_port_combo.addItem(cfg.get("sensor.port", "COM3"))
         idx = self.sensor_port_combo.findText(current)
         if idx >= 0:
             self.sensor_port_combo.setCurrentIndex(idx)
-
         logger.add(f"[AS5600] Найдено портов: {self.sensor_port_combo.count()}")
 
+    def _on_joint_combo_changed(self, index: int):
+        """При смене сустава — загрузить калибровку энкодера из конфига."""
+        enc = cfg.joint_encoder_cfg(index)
+        self.sensor_scale_spin.setValue(enc.get("scale", 1.0))
+        self.chk_sensor_invert.setChecked(enc.get("invert", False))
+        # offset из конфига можно добавить в sensor_zero_offset
+        self.sensor_zero_offset = enc.get("offset_deg", 0.0)
+
     def connect_sensor(self):
-        """Подключается к Arduino с AS5600 по выбранному COM-порту."""
         if not SERIAL_AVAILABLE:
             QMessageBox.warning(self, "Ошибка",
                                 "Установите pyserial:\n  pip install pyserial")
             return
-
         if self.sensor_thread is not None:
             self.disconnect_sensor()
-
-        # Извлекаем имя порта
         port = self.sensor_port_combo.currentData()
         if port is None:
             port = self.sensor_port_combo.currentText().split(" ")[0].strip()
-
-        # Проверяем, что порт датчика ≠ порту робота
         robot_port = self.conn_target_edit.text().strip().upper()
         if port.upper() == robot_port and self.robot and self.robot.is_connected:
             QMessageBox.warning(self, "Конфликт",
                                 f"Порт {port} уже используется роботом!")
             return
-
-        self.sensor_thread = SensorReaderThread(port, 115200, parent=self)
+        baudrate = cfg.get("sensor.baudrate", 115200)
+        self.sensor_thread = SensorReaderThread(port, baudrate, parent=self)
         self.sensor_thread.data_received.connect(self._on_sensor_data)
         self.sensor_thread.connection_changed.connect(self._on_sensor_connection)
         self.sensor_thread.start()
-
         self.btn_sensor_connect.setEnabled(False)
         self.btn_sensor_disconnect.setEnabled(True)
         self.sensor_port_combo.setEnabled(False)
         self.btn_refresh_ports.setEnabled(False)
 
     def disconnect_sensor(self):
-        """Отключает датчик AS5600."""
         self.chk_sensor_enable.setChecked(False)
-
         if self.sensor_thread is not None:
             self.sensor_thread.stop()
             self.sensor_thread = None
-
         self.sensor_connected = False
         self.btn_sensor_connect.setEnabled(True)
         self.btn_sensor_disconnect.setEnabled(False)
         self.sensor_port_combo.setEnabled(True)
         self.btn_refresh_ports.setEnabled(True)
-
+        mono = cfg.get("gui.font_monospace", "Consolas")
         self.sensor_angle_label.setText("Угол: —")
         self.sensor_angle_label.setStyleSheet(
-            "font-family: Consolas; font-size: 22px; font-weight: bold; "
-            "background-color: #1a1a2e; color: #0f0; padding: 8px; border-radius: 4px;")
+            f"font-family: {mono}; font-size: 22px; font-weight: bold; "
+            f"background-color: #1a1a2e; color: #0f0; padding: 8px; border-radius: 4px;")
         self.sensor_detail_label.setText("RAW: —   AGC: —   MAG: —   Магнит: —")
         self.sensor_bar.setValue(0)
         self.sensor_mapping_label.setText("Ноль: 0.0°  →  Сустав: 0.0°")
 
     def _on_sensor_connection(self, connected: bool, message: str):
-        """Слот: изменение состояния подключения датчика."""
         self.sensor_connected = connected
         if connected:
             self.sensor_detail_label.setStyleSheet(
-                "font-family: Consolas; font-size: 11px; color: #4CAF50;")
+                f"font-family: {cfg.get('gui.font_monospace', 'Consolas')}; "
+                f"font-size: 11px; color: #4CAF50;")
         else:
             self.sensor_detail_label.setStyleSheet(
-                "font-family: Consolas; font-size: 11px; color: #888;")
-            # Если поток завершился сам (ошибка) — разблокируем кнопки
+                f"font-family: {cfg.get('gui.font_monospace', 'Consolas')}; "
+                f"font-size: 11px; color: #888;")
             if self.sensor_thread is not None:
                 self.btn_sensor_connect.setEnabled(True)
                 self.btn_sensor_disconnect.setEnabled(False)
@@ -943,89 +960,66 @@ class RobotControlGUI(QMainWindow):
         logger.add(f"[AS5600] {message}")
 
     def _on_sensor_data(self, deg: float, raw: int, agc: int, mag: int, status: str):
-        """Слот: получены новые данные с датчика."""
         self.sensor_current_deg = deg
-
-        # Экспоненциальное сглаживание
         alpha = self.sensor_smooth_slider.value() / 100.0
-        self.sensor_smoothed_deg = (
-            alpha * deg + (1.0 - alpha) * self.sensor_smoothed_deg)
-
-        # Обновляем UI
+        self.sensor_smoothed_deg = alpha * deg + (1.0 - alpha) * self.sensor_smoothed_deg
         self.sensor_angle_label.setText(f"{deg:.1f}°")
-
-        # Подсветка статуса магнита
-        if status == "OK":
-            color = "#0f0"
-        elif status == "WEAK":
-            color = "#ff0"
-        elif status == "STRONG":
-            color = "#f80"
-        else:
-            color = "#f00"
-
+        color_map = {"OK": "#0f0", "WEAK": "#ff0", "STRONG": "#f80"}
+        color = color_map.get(status, "#f00")
+        mono = cfg.get("gui.font_monospace", "Consolas")
         self.sensor_angle_label.setStyleSheet(
-            f"font-family: Consolas; font-size: 22px; font-weight: bold; "
+            f"font-family: {mono}; font-size: 22px; font-weight: bold; "
             f"background-color: #1a1a2e; color: {color}; padding: 8px; border-radius: 4px;")
-
         self.sensor_detail_label.setText(
             f"RAW: {raw}   AGC: {agc}   MAG: {mag}   Магнит: {status}")
-
         self.sensor_bar.setValue(int(deg * 10))
-
-        # Вычисляем угол сустава (для отображения)
         delta = self._calc_joint_delta()
         joint_idx = self.sensor_joint_combo.currentIndex()
+        joint_names = cfg.joint_names()
+        jname = joint_names[joint_idx] if joint_idx < len(joint_names) else f"J{joint_idx+1}"
         self.sensor_mapping_label.setText(
-            f"Ноль: {self.sensor_zero_offset:.1f}°  →  "
-            f"J{joint_idx+1}: {delta:.1f}°")
+            f"Ноль: {self.sensor_zero_offset:.1f}°  →  {jname}: {delta:.1f}°")
 
     def _set_sensor_zero(self):
-        """Устанавливает текущий угол датчика как нулевую точку."""
         self.sensor_zero_offset = self.sensor_current_deg
         self.sensor_smoothed_deg = self.sensor_current_deg
         logger.add(f"[AS5600] Ноль установлен: {self.sensor_zero_offset:.1f}°")
 
     def _calc_joint_delta(self) -> float:
-        """Вычисляет целевой угол сустава (в градусах) на основе датчика."""
         scale     = self.sensor_scale_spin.value()
         direction = -1.0 if self.chk_sensor_invert.isChecked() else 1.0
-
-        # Разница от нуля с учётом перехода через 0°/360°
         delta = self.sensor_smoothed_deg - self.sensor_zero_offset
-        # Нормализуем в диапазон -180 .. +180
         while delta > 180.0:
             delta -= 360.0
         while delta < -180.0:
             delta += 360.0
-
         return delta * scale * direction
 
     def _apply_sensor_to_joint(self):
-        """Применяет угол датчика к выбранному суставу робота."""
         if not self.robot or not self.robot.is_connected:
             return
         if not self.chk_sensor_enable.isChecked():
             return
         if not self.sensor_connected:
             return
-
         try:
             joint_idx = self.sensor_joint_combo.currentIndex()
             delta_deg = self._calc_joint_delta()
-            target_rad = math.radians(delta_deg)
 
-            # Получаем текущие позиции суставов, меняем нужный
+            # Проверка лимитов из конфига
+            joints_cfg = cfg.get("joints", [])
+            if joint_idx < len(joints_cfg):
+                jcfg = joints_cfg[joint_idx]
+                min_d = jcfg.get("min_deg", -360)
+                max_d = jcfg.get("max_deg",  360)
+                delta_deg = max(min_d, min(max_d, delta_deg))
+
+            target_rad = math.radians(delta_deg)
             joints = list(self.robot.get_joint_positions())
             joints[joint_idx] = target_rad
-
             self.robot.move_j(joints, blocking=False)
         except Exception as e:
             logger.add(f"[AS5600] Ошибка управления: {e}")
-
-    # ══════════════════════════════════════════════════════════
-    #  ▲▲▲  КОНЕЦ МЕТОДОВ AS5600  ▲▲▲
-    # ══════════════════════════════════════════════════════════
 
     # ══════════════════════════════════════════════════════════
     #  Общие обработчики
@@ -1064,7 +1058,7 @@ class RobotControlGUI(QMainWindow):
     def setup_timer(self):
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_info)
-        self.timer.start(200)
+        self.timer.start(cfg.get("application.update_interval_ms", 200))
 
     def update_info(self):
         if not self.robot or not self.robot.is_connected:
@@ -1073,7 +1067,6 @@ class RobotControlGUI(QMainWindow):
             cart = self.robot.get_cartesian_pose()
             for i, val in enumerate(cart):
                 self.pos_labels[i].setText(f"{val:+.3f}")
-
             is_joint = self.move_mode_combo.currentText().startswith("MoveJ")
             if is_joint:
                 joints = self.robot.get_joint_positions()
@@ -1082,13 +1075,11 @@ class RobotControlGUI(QMainWindow):
             else:
                 for i, val in enumerate(cart):
                     self.joy_val_labels[i].setText(f"{val:.3f}")
-
             if self.torque_group.isVisible():
                 torques = self.robot.get_joint_torques()
                 for i, val in enumerate(torques):
                     self.torque_labels[i].setText(f"{val:+.3f}")
 
-            # ═══ НОВОЕ: применяем датчик к суставу каждый тик таймера ═══
             self._apply_sensor_to_joint()
 
             state = self.robot.state
@@ -1109,7 +1100,6 @@ class RobotControlGUI(QMainWindow):
             self.log_view.setText(logs)
             sb = self.log_view.verticalScrollBar()
             sb.setValue(sb.maximum())
-
         except Exception as e:
             logger.add(f"Ошибка обновления: {e}")
 
@@ -1123,7 +1113,7 @@ class RobotControlGUI(QMainWindow):
     def closeEvent(self, event):
         self._stop_sim_render()
         self.stop_camera()
-        self.disconnect_sensor()          # ← НОВОЕ: отключаем датчик
+        self.disconnect_sensor()
         if self.robot:
             self.robot.disconnect()
         logger.save_to_file()
