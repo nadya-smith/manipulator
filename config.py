@@ -139,21 +139,53 @@ DEFAULT_CONFIG = {
         "gui_invert":       True,
     },
 
-    # ── Датчик AS5600 ── (без изменений)
+    # ── Датчики AS5600 (для 7 каналов) ──
     "sensor": {
         "port": "COM3",
         "baudrate": 115200,
         "wait_after_connect_ms": 4000,
         "protocol_prefix": "AS5600:",
+        "channel_count": 7,
+
+        # Значения по умолчанию (если канал не описан в channels)
         "defaults": {
             "smoothing": 0.30,
             "scale": 1.0,
             "invert": False,
-            "joint_index": 0,
         },
+
+        # Маппинг каналов Arduino → суставы / схват
+        #   target: "joint" | "gripper"
+        #   joint_index: 0–5 (для target="joint")
+        #   enabled: разрешить управление
+        #   scale, offset_deg, invert — калибровка
+        #   smoothing — коэффициент сглаживания (0.01–0.99)
+        "channels": [
+            {"channel": 0, "target": "joint", "joint_index": 0,
+             "enabled": True, "scale": 1.0, "offset_deg": 0.0,
+             "invert": False, "smoothing": 0.30},
+            {"channel": 1, "target": "joint", "joint_index": 1,
+             "enabled": True, "scale": 1.0, "offset_deg": 0.0,
+             "invert": False, "smoothing": 0.30},
+            {"channel": 2, "target": "joint", "joint_index": 2,
+             "enabled": True, "scale": 1.0, "offset_deg": 0.0,
+             "invert": False, "smoothing": 0.30},
+            {"channel": 3, "target": "joint", "joint_index": 3,
+             "enabled": True, "scale": 1.0, "offset_deg": 0.0,
+             "invert": False, "smoothing": 0.30},
+            {"channel": 4, "target": "joint", "joint_index": 4,
+             "enabled": True, "scale": 1.0, "offset_deg": 0.0,
+             "invert": False, "smoothing": 0.30},
+            {"channel": 5, "target": "joint", "joint_index": 5,
+             "enabled": True, "scale": 1.0, "offset_deg": 0.0,
+             "invert": False, "smoothing": 0.30},
+            {"channel": 6, "target": "gripper", "joint_index": -1,
+             "enabled": True, "scale": 1.0, "offset_deg": 0.0,
+             "invert": False, "smoothing": 0.30},
+        ],
     },
 
-    # ── Камера ── (без изменений)
+    # ── Камера ──
     "camera": {
         "default_index": 0,
         "use_virtual": False,
@@ -378,6 +410,30 @@ class AppConfig:
     def color_configs(self) -> dict:
         """Конфигурации цветов для детекции."""
         return self.get("detection.colors", {})
+
+    def sensor_channel_cfg(self, channel: int) -> dict:
+        """Конфигурация одного канала датчика.
+        Если канал не описан в channels — генерируется дефолт."""
+        channels = self.get("sensor.channels", [])
+        for ch in channels:
+            if ch.get("channel") == channel:
+                return ch
+        # Дефолт: канал → сустав напрямую, 7-й → схват
+        defaults = self.get("sensor.defaults", {})
+        n = self.joint_count()
+        return {
+            "channel": channel,
+            "target": "joint" if channel < n else "gripper",
+            "joint_index": channel if channel < n else -1,
+            "enabled": True,
+            "scale": defaults.get("scale", 1.0),
+            "offset_deg": 0.0,
+            "invert": defaults.get("invert", False),
+            "smoothing": defaults.get("smoothing", 0.30),
+        }
+
+    def sensor_channel_count(self) -> int:
+        return self.get("sensor.channel_count", 7)
 
     def __repr__(self):
         return f"<AppConfig path={self._config_path!r} keys={len(self._data)}>"

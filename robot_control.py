@@ -4,19 +4,22 @@ import sys
 import math
 import cv2
 import numpy as np
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QPushButton, QLabel, QTextEdit, QLineEdit, QGridLayout, QGroupBox,
-                             QComboBox, QSpinBox, QFileDialog, QMessageBox, QProgressBar,
-                             QCheckBox, QSlider, QDoubleSpinBox, QFrame, QTabWidget)
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QTextEdit, QLineEdit, QGridLayout, QGroupBox,
+    QComboBox, QSpinBox, QFileDialog, QMessageBox, QProgressBar,
+    QCheckBox, QSlider, QDoubleSpinBox, QFrame, QTabWidget,
+    QScrollArea, QSizePolicy)
 from PyQt5.QtCore import QTimer, Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap, QImage, QColor, QFont
 
-from robot_backend import RobotFactory, RobotMode, RobotState, BaseRobot, MUJOCO_AVAILABLE
+from robot_backend import (RobotFactory, RobotMode, RobotState,
+                           BaseRobot, MUJOCO_AVAILABLE)
 from logger import logger
-from config import cfg                        # ← КОНФИГ
+from config import cfg
 
 # ═══════════════════════════════════════════════════════════════
-#  Попытка импорта pyserial для AS5600
+#  pyserial
 # ═══════════════════════════════════════════════════════════════
 try:
     import serial
@@ -27,12 +30,11 @@ except ImportError:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Поток чтения данных AS5600 с Arduino
+#  Поток чтения 7× AS5600 через TCA9548A
 # ═══════════════════════════════════════════════════════════════
 class SensorReaderThread(QThread):
-    """Читает данные AS5600 с Arduino через COM-порт."""
-
-    data_received = pyqtSignal(float, int, int, int, str)
+    data_received = pyqtSignal(int, float, int, int, int, str)
+    channel_error = pyqtSignal(int, str)
     connection_changed = pyqtSignal(bool, str)
 
     def __init__(self, port: str, baudrate: int = None, parent=None):
@@ -42,58 +44,82 @@ class SensorReaderThread(QThread):
         self.running = False
         self._prefix = cfg.get("sensor.protocol_prefix", "AS5600:")
         self._wait_ms = cfg.get("sensor.wait_after_connect_ms", 4000)
+        self._serial = None
 
     def run(self):
         self.running = True
-        ser = None
         try:
-            ser = serial.Serial(self.port, self.baudrate, timeout=0.5)
+            self._serial = serial.Serial(
+                self.port, self.baudrate, timeout=0.5)
             self.msleep(self._wait_ms)
-            ser.reset_input_buffer()
+            self._serial.reset_input_buffer()
             self.connection_changed.emit(True, f"Подключён: {self.port}")
-            logger.add(f"[AS5600] Подключён к {self.port}")
+            logger.add(f"[Sensors] Подключён к {self.port}")
 
             while self.running:
-                if ser.in_waiting:
+                if self._serial.in_waiting:
                     try:
-                        raw_line = ser.readline()
-                        line = raw_line.decode('utf-8', errors='ignore').strip()
+                        line = (self._serial.readline()
+                                .decode('utf-8', errors='ignore').strip())
+                        if not line:
+                            continue
+                        if line.startswith("#"):
+                            logger.add(f"[Arduino] {line}")
+                            continue
                         self._parse(line)
                     except Exception:
                         pass
                 else:
-                    self.msleep(5)
-
+                    self.msleep(2)
         except serial.SerialException as e:
-            msg = f"Ошибка порта: {e}"
-            self.connection_changed.emit(False, msg)
-            logger.add(f"[AS5600] {msg}")
+            self.connection_changed.emit(False, f"Ошибка порта: {e}")
+            logger.add(f"[Sensors] {e}")
         except Exception as e:
-            msg = f"Ошибка: {e}"
-            self.connection_changed.emit(False, msg)
-            logger.add(f"[AS5600] {msg}")
+            self.connection_changed.emit(False, f"Ошибка: {e}")
+            logger.add(f"[Sensors] {e}")
         finally:
-            if ser and ser.is_open:
+            if self._serial and self._serial.is_open:
                 try:
-                    ser.close()
+                    self._serial.close()
                 except Exception:
                     pass
             self.connection_changed.emit(False, "Отключён")
-            logger.add("[AS5600] Порт закрыт")
+            logger.add("[Sensors] Порт закрыт")
 
     def _parse(self, line: str):
         if not line.startswith(self._prefix):
             return
-        try:
-            parts = line[len(self._prefix):].split(",")
-            deg   = float(parts[0])
-            raw   = int(parts[1])
-            agc   = int(parts[2])
-            mag   = int(parts[3])
-            st    = parts[4].strip()
-            self.data_received.emit(deg, raw, agc, mag, st)
-        except (ValueError, IndexError):
-            pass
+        payload = line[len(self._prefix):]
+        parts = payload.split(",")
+        if len(parts) == 6:
+            try:
+                self.data_received.emit(
+                    int(parts[0]), float(parts[1]),
+                    int(parts[2]), int(parts[3]),
+                    int(parts[4]), parts[5].strip())
+            except (ValueError, IndexError):
+                pass
+        elif len(parts) == 5:
+            try:
+                self.data_received.emit(
+                    0, float(parts[0]), int(parts[1]),
+                    int(parts[2]), int(parts[3]), parts[4].strip())
+            except (ValueError, IndexError):
+                pass
+        elif len(parts) == 2:
+            try:
+                self.channel_error.emit(
+                    int(parts[0]), parts[1].strip())
+            except ValueError:
+                pass
+
+    def send_command(self, cmd: str):
+        if self._serial and self._serial.is_open:
+            try:
+                self._serial.write((cmd.strip() + "\n").encode())
+                logger.add(f"[Sensors] → {cmd}")
+            except Exception as e:
+                logger.add(f"[Sensors] Ошибка отправки: {e}")
 
     def stop(self):
         self.running = False
@@ -130,43 +156,43 @@ class SimRenderThread(QThread):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Поток захвата реальной камеры + детекция
+#  Поток камеры + детекция
 # ═══════════════════════════════════════════════════════════════
 class CameraThread(QThread):
     frame_ready = pyqtSignal(np.ndarray)
     detection_info = pyqtSignal(list)
 
-    def __init__(self, camera_index=0, robot: BaseRobot = None, parent=None):
+    def __init__(self, camera_index=0, robot: BaseRobot = None,
+                 parent=None):
         super().__init__(parent)
         self.camera_index = camera_index
         self.robot = robot
         self.running = False
         self.cap = None
 
-        # ── Из конфига ──
-        self.min_area       = cfg.get("detection.min_area", 500)
-        self.show_contours  = cfg.get("detection.show_contours", True)
-        self.show_bbox      = cfg.get("detection.show_bounding_boxes", True)
-        self.frame_delay    = cfg.get("camera.frame_delay_ms", 30)
+        self.min_area = cfg.get("detection.min_area", 500)
+        self.show_contours = cfg.get("detection.show_contours", True)
+        self.show_bbox = cfg.get("detection.show_bounding_boxes", True)
+        self.frame_delay = cfg.get("camera.frame_delay_ms", 30)
         self.use_virtual_camera = cfg.get("camera.use_virtual", False)
 
         proc = cfg.get("detection.processing", {})
         bk = proc.get("blur_kernel", [5, 5])
-        self._blur_kernel   = (bk[0], bk[1])
-        self._morph_ksize   = proc.get("morph_kernel_size", 7)
-        self._morph_iters   = proc.get("morph_iterations", 2)
+        self._blur_kernel = (bk[0], bk[1])
+        self._morph_ksize = proc.get("morph_kernel_size", 7)
+        self._morph_iters = proc.get("morph_iterations", 2)
 
-        # ── Цвета из конфига ──
-        self.color_ranges   = {}   # name → [(lower, upper), …]
-        self.draw_colors    = {}   # name → (B, G, R)
-        self.enabled_colors = {}   # name → bool
-
+        self.color_ranges = {}
+        self.draw_colors = {}
+        self.enabled_colors = {}
         for name, c_cfg in cfg.color_configs().items():
             ranges = []
             for r in c_cfg.get("hsv_ranges", []):
-                ranges.append((np.array(r["lower"]), np.array(r["upper"])))
+                ranges.append(
+                    (np.array(r["lower"]), np.array(r["upper"])))
             self.color_ranges[name] = ranges
-            self.draw_colors[name]  = tuple(c_cfg.get("draw_bgr", [255, 255, 255]))
+            self.draw_colors[name] = tuple(
+                c_cfg.get("draw_bgr", [255, 255, 255]))
             self.enabled_colors[name] = c_cfg.get("enabled", True)
 
     def set_min_area(self, area: int):
@@ -181,7 +207,8 @@ class CameraThread(QThread):
         if not self.use_virtual_camera:
             self.cap = cv2.VideoCapture(self.camera_index)
             if not self.cap.isOpened():
-                logger.add(f"[Камера] Не удалось открыть #{self.camera_index}")
+                logger.add(
+                    f"[Камера] Не удалось открыть #{self.camera_index}")
                 self.running = False
                 return
             logger.add(f"[Камера] Подключена #{self.camera_index}")
@@ -216,16 +243,20 @@ class CameraThread(QThread):
         overlay = frame.copy()
         kernel = cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE, (self._morph_ksize, self._morph_ksize))
-
         for color_name, ranges in self.color_ranges.items():
             if not self.enabled_colors.get(color_name, False):
                 continue
             mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
             for lower, upper in ranges:
                 mask |= cv2.inRange(hsv, lower, upper)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel, iterations=self._morph_iters)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=self._morph_iters)
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            mask = cv2.morphologyEx(
+                mask, cv2.MORPH_OPEN, kernel,
+                iterations=self._morph_iters)
+            mask = cv2.morphologyEx(
+                mask, cv2.MORPH_CLOSE, kernel,
+                iterations=self._morph_iters)
+            contours, _ = cv2.findContours(
+                mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             draw_color = self.draw_colors[color_name]
             for cnt in contours:
                 area = cv2.contourArea(cnt)
@@ -236,16 +267,24 @@ class CameraThread(QThread):
                     continue
                 cx = int(M["m10"] / M["m00"])
                 cy = int(M["m01"] / M["m00"])
-                detections.append({"color": color_name, "area": int(area), "cx": cx, "cy": cy})
+                detections.append({
+                    "color": color_name, "area": int(area),
+                    "cx": cx, "cy": cy})
                 if self.show_contours:
-                    cv2.drawContours(overlay, [cnt], -1, draw_color, 2)
+                    cv2.drawContours(
+                        overlay, [cnt], -1, draw_color, 2)
                 if self.show_bbox:
                     x, y, w, h = cv2.boundingRect(cnt)
-                    cv2.rectangle(overlay, (x, y), (x+w, y+h), draw_color, 2)
-                cv2.putText(overlay, f"{color_name}: {area:.0f}", (cx, cy),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, draw_color, 2)
-        cv2.putText(overlay, f"Objects: {len(detections)}", (10, 25),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    cv2.rectangle(
+                        overlay, (x, y), (x + w, y + h),
+                        draw_color, 2)
+                cv2.putText(
+                    overlay, f"{color_name}: {area:.0f}",
+                    (cx, cy), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, draw_color, 2)
+        cv2.putText(
+            overlay, f"Objects: {len(detections)}", (10, 25),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         return overlay, detections
 
 
@@ -259,21 +298,19 @@ class RobotControlGUI(QMainWindow):
         self.camera_thread = None
         self.sim_render_thread = None
 
-        # ── AS5600 ────────────────────────────
+        # AS5600 × 7
         self.sensor_thread: SensorReaderThread = None
-        self.sensor_current_deg  = 0.0
-        self.sensor_smoothed_deg = 0.0
-        self.sensor_zero_offset  = 0.0
-        self.sensor_connected    = False
+        self.sensor_connected = False
+        self._ch_data = {}
+        self._ch_widgets = {}
 
-        self.setWindowTitle(cfg.get("application.window_title",
-                                    "Управление роботом"))
+        self.setWindowTitle(cfg.get(
+            "application.window_title", "Управление роботом"))
         self.setGeometry(
             cfg.get("application.window_x", 100),
             cfg.get("application.window_y", 100),
             cfg.get("application.window_width", 1550),
-            cfg.get("application.window_height", 1050),
-        )
+            cfg.get("application.window_height", 1050))
         self.init_ui()
         self.setup_timer()
 
@@ -285,37 +322,90 @@ class RobotControlGUI(QMainWindow):
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
 
-        mono_font  = cfg.get("gui.font_monospace", "Consolas")
-        font_size  = cfg.get("gui.font_size", 13)
+        mono = cfg.get("gui.font_monospace", "Consolas")
+        fsz = cfg.get("gui.font_size", 13)
         joint_names = cfg.joint_names()
         axis_labels = cfg.get("gui.axis_labels",
-                              ["J1/X", "J2/Y", "J3/Z", "J4/Rx", "J5/Ry", "J6/Rz"])
-        tcp_labels  = cfg.get("gui.tcp_labels", ["X", "Y", "Z", "Rx", "Ry", "Rz"])
+                              ["J1/X", "J2/Y", "J3/Z",
+                               "J4/Rx", "J5/Ry", "J6/Rz"])
+        tcp_labels = cfg.get("gui.tcp_labels",
+                             ["X", "Y", "Z", "Rx", "Ry", "Rz"])
 
         # ════════════ ЛЕВАЯ ПАНЕЛЬ ════════════
         left_panel = QVBoxLayout()
         main_layout.addLayout(left_panel, 2)
 
-        # ── Режим работы ──────────────────────
-        mode_group = QGroupBox("⚙ Режим работы")
-        mode_group.setStyleSheet("QGroupBox { font-weight: bold; font-size: 14px; }")
-        mode_layout = QVBoxLayout()
+        # ── 1. Режим работы (всегда видим) ────
+        left_panel.addWidget(self._build_mode_group(mono, fsz))
 
-        # ╔══════════════════════════════════════════════════════╗
-        # ║  ВАЖНО: создаём conn_target_edit ДО подключения     ║
-        # ║  сигнала currentIndexChanged, чтобы избежать        ║
-        # ║  AttributeError при setCurrentIndex()               ║
-        # ╚══════════════════════════════════════════════════════╝
+        # ── 2. Кнопки управления (всегда видны) ──
+        left_panel.addWidget(self._build_ctrl_group())
 
-        # --- Сначала создаём поле ввода цели ---
+        # ── 3. ВКЛАДКИ: Управление / Датчики ──
+        self.left_tabs = QTabWidget()
+        self.left_tabs.setStyleSheet(f"font-size: {fsz}px;")
+
+        # --- Вкладка «Управление» ---
+        ctrl_tab = QWidget()
+        ctrl_tab_layout = QVBoxLayout(ctrl_tab)
+        ctrl_tab_layout.setContentsMargins(4, 4, 4, 4)
+        ctrl_tab_layout.addWidget(
+            self._build_joy_group(axis_labels, mono))
+        ctrl_tab_layout.addWidget(self._build_grip_group())
+        ctrl_tab_layout.addStretch()
+        self.left_tabs.addTab(ctrl_tab, "🎮 Управление")
+
+        # --- Вкладка «Датчики» ---
+        sensor_tab = QWidget()
+        sensor_tab_layout = QVBoxLayout(sensor_tab)
+        sensor_tab_layout.setContentsMargins(4, 4, 4, 4)
+        sensor_tab_layout.addWidget(
+            self._build_sensor_group(mono, joint_names))
+        sensor_tab_layout.addStretch()
+        self.left_tabs.addTab(sensor_tab, "🔄 Датчики AS5600")
+
+        left_panel.addWidget(self.left_tabs)
+
+        # ── 4. Статус (всегда видим) ──────────
+        self.status_label = QLabel("НЕ ПОДКЛЮЧЕНО")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setStyleSheet(
+            "background-color: gray; color: white; "
+            "font-size: 22px; font-weight: bold; padding: 15px;")
+        left_panel.addWidget(self.status_label)
+
+        # ════════════ ПРАВАЯ ПАНЕЛЬ ════════════
+        right_panel = QVBoxLayout()
+        main_layout.addLayout(right_panel, 3)
+
+        right_panel.addWidget(
+            self._build_pose_group(tcp_labels, mono, fsz))
+        right_panel.addWidget(
+            self._build_torque_group(joint_names, mono))
+        right_panel.addWidget(
+            self._build_view_tabs(mono, fsz))
+        right_panel.addWidget(self._build_log_group())
+
+    # ──────────────────────────────────────────────────
+    #  Билдеры секций
+    # ──────────────────────────────────────────────────
+
+    def _build_mode_group(self, mono, fsz) -> QGroupBox:
+        grp = QGroupBox("⚙ Режим работы")
+        grp.setStyleSheet(
+            "QGroupBox { font-weight: bold; font-size: 14px; }")
+        lay = QVBoxLayout()
+
+        # Цель подключения (создаём первым!)
         conn_row = QHBoxLayout()
-        default_port = cfg.get("robot.real.port", "COM39")
-        self.conn_target_edit = QLineEdit(default_port)
-        self.conn_target_edit.setPlaceholderText("COM-порт или путь к XML")
+        self.conn_target_edit = QLineEdit(
+            cfg.get("robot.real.port", "COM39"))
+        self.conn_target_edit.setPlaceholderText(
+            "COM-порт или путь к XML")
         conn_row.addWidget(QLabel("Цель:"))
         conn_row.addWidget(self.conn_target_edit)
 
-        # --- Затем создаём селектор режима ---
+        # Режим
         mode_row = QHBoxLayout()
         self.mode_selector = QComboBox()
         self.mode_selector.addItem("🤖 Реальный робот (MCX)")
@@ -324,418 +414,506 @@ class RobotControlGUI(QMainWindow):
         else:
             self.mode_selector.addItem("🖥 MuJoCo ⚠ НЕДОСТУПНА")
             self.mode_selector.model().item(1).setEnabled(False)
-        self.mode_selector.setStyleSheet(f"font-size: {font_size}px; padding: 5px;")
+        self.mode_selector.setStyleSheet(
+            f"font-size: {fsz}px; padding: 5px;")
         mode_row.addWidget(QLabel("Режим:"))
         mode_row.addWidget(self.mode_selector)
 
-        # --- Подключаем сигнал ПОСЛЕ создания обоих виджетов ---
-        self.mode_selector.currentIndexChanged.connect(self._on_mode_selector_changed)
+        self.mode_selector.currentIndexChanged.connect(
+            self._on_mode_selector_changed)
 
-        # --- Теперь безопасно устанавливаем режим из конфига ---
         default_mode = cfg.get("robot.default_mode", "simulation")
         if default_mode == "simulation" and MUJOCO_AVAILABLE:
             self.mode_selector.setCurrentIndex(1)
-        # conn_target_edit уже обновится через сигнал
 
-        # --- Добавляем в layout в правильном порядке ---
-        mode_layout.addLayout(mode_row)
-        mode_layout.addLayout(conn_row)
+        lay.addLayout(mode_row)
+        lay.addLayout(conn_row)
 
-        # --- Остальное без изменений ---
-        conn_btns = QHBoxLayout()
+        # Кнопки подключения
+        btns = QHBoxLayout()
         self.btn_connect = QPushButton("🔌 Подключить")
         self.btn_connect.setStyleSheet(
-            "background-color: #2196F3; color: white; font-weight: bold; padding: 10px;")
+            "background-color: #2196F3; color: white; "
+            "font-weight: bold; padding: 10px;")
         self.btn_connect.clicked.connect(self.connect_robot)
         self.btn_disconnect = QPushButton("🔌 Отключить")
         self.btn_disconnect.setStyleSheet(
-            "background-color: #757575; color: white; font-weight: bold; padding: 10px;")
+            "background-color: #757575; color: white; "
+            "font-weight: bold; padding: 10px;")
         self.btn_disconnect.clicked.connect(self.disconnect_robot)
         self.btn_disconnect.setEnabled(False)
-        conn_btns.addWidget(self.btn_connect)
-        conn_btns.addWidget(self.btn_disconnect)
-        mode_layout.addLayout(conn_btns)
+        btns.addWidget(self.btn_connect)
+        btns.addWidget(self.btn_disconnect)
+        lay.addLayout(btns)
 
         self.mode_indicator = QLabel("Не подключено")
         self.mode_indicator.setAlignment(Qt.AlignCenter)
         self.mode_indicator.setStyleSheet(
-            "background-color: #666; color: white; font-size: 13px; padding: 8px; border-radius: 4px;")
-        mode_layout.addWidget(self.mode_indicator)
-        mode_group.setLayout(mode_layout)
-        left_panel.addWidget(mode_group)
+            "background-color: #666; color: white; "
+            "font-size: 13px; padding: 8px; border-radius: 4px;")
+        lay.addWidget(self.mode_indicator)
+        grp.setLayout(lay)
+        return grp
 
-        # ── дальше всё без изменений: Кнопки управления, Ручное управление и т.д. ──
-        # ...
-
-        # ── Кнопки управления ─────────────────
-        ctrl_group = QGroupBox("Управление")
-        ctrl_layout = QGridLayout()
-        self.btn_on        = QPushButton("ВКЛ")
-        self.btn_off       = QPushButton("ВЫКЛ")
-        self.btn_pause     = QPushButton("ПАУЗА")
-        self.btn_resume    = QPushButton("ПРОДОЛЖИТЬ")
+    def _build_ctrl_group(self) -> QGroupBox:
+        grp = QGroupBox("Управление")
+        lay = QGridLayout()
+        self.btn_on = QPushButton("ВКЛ")
+        self.btn_off = QPushButton("ВЫКЛ")
+        self.btn_pause = QPushButton("ПАУЗА")
+        self.btn_resume = QPushButton("ПРОДОЛЖИТЬ")
         self.btn_emergency = QPushButton("⛔ СТОП")
-        self.btn_home      = QPushButton("🏠 HOME")
+        self.btn_home = QPushButton("🏠 HOME")
         self.btn_on.setStyleSheet(
-            "background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
+            "background-color: #4CAF50; color: white; "
+            "font-weight: bold; padding: 8px;")
         self.btn_emergency.setStyleSheet(
-            "background-color: #f44336; color: white; font-weight: bold; padding: 8px;")
+            "background-color: #f44336; color: white; "
+            "font-weight: bold; padding: 8px;")
         self.btn_home.setStyleSheet(
-            "background-color: #FF9800; color: white; font-weight: bold; padding: 8px;")
-        for btn in [self.btn_off, self.btn_pause, self.btn_resume]:
-            btn.setStyleSheet("font-weight: bold; padding: 8px;")
-        ctrl_layout.addWidget(self.btn_on,        0, 0)
-        ctrl_layout.addWidget(self.btn_off,       0, 1)
-        ctrl_layout.addWidget(self.btn_pause,     1, 0)
-        ctrl_layout.addWidget(self.btn_resume,    1, 1)
-        ctrl_layout.addWidget(self.btn_home,      2, 0)
-        ctrl_layout.addWidget(self.btn_emergency, 2, 1)
-        ctrl_group.setLayout(ctrl_layout)
-        left_panel.addWidget(ctrl_group)
-        self.btn_on.clicked.connect(lambda: logger.add("Робот включён"))
+            "background-color: #FF9800; color: white; "
+            "font-weight: bold; padding: 8px;")
+        for b in [self.btn_off, self.btn_pause, self.btn_resume]:
+            b.setStyleSheet("font-weight: bold; padding: 8px;")
+        lay.addWidget(self.btn_on, 0, 0)
+        lay.addWidget(self.btn_off, 0, 1)
+        lay.addWidget(self.btn_pause, 1, 0)
+        lay.addWidget(self.btn_resume, 1, 1)
+        lay.addWidget(self.btn_home, 2, 0)
+        lay.addWidget(self.btn_emergency, 2, 1)
+        grp.setLayout(lay)
+
+        self.btn_on.clicked.connect(
+            lambda: logger.add("Робот включён"))
         self.btn_off.clicked.connect(self._on_btn_off)
-        self.btn_pause.clicked.connect(lambda: self._safe_call(lambda: self.robot.pause()))
-        self.btn_resume.clicked.connect(lambda: self._safe_call(lambda: self.robot.resume()))
-        self.btn_emergency.clicked.connect(lambda: self._safe_call(lambda: self.robot.emergency_stop()))
-        self.btn_home.clicked.connect(lambda: self._safe_call(lambda: self.robot.move_to_home()))
+        self.btn_pause.clicked.connect(
+            lambda: self._safe_call(lambda: self.robot.pause()))
+        self.btn_resume.clicked.connect(
+            lambda: self._safe_call(lambda: self.robot.resume()))
+        self.btn_emergency.clicked.connect(
+            lambda: self._safe_call(
+                lambda: self.robot.emergency_stop()))
+        self.btn_home.clicked.connect(
+            lambda: self._safe_call(
+                lambda: self.robot.move_to_home()))
+        return grp
 
-        # ── Ручное управление ─────────────────
-        joy_group = QGroupBox("Ручное управление")
-        joy_layout = QGridLayout()
+    def _build_joy_group(self, axis_labels, mono) -> QGroupBox:
+        grp = QGroupBox("Ручное управление")
+        lay = QGridLayout()
 
-        default_move = cfg.get("robot.movement.default_mode", "MoveJ")
         self.move_mode_combo = QComboBox()
-        self.move_mode_combo.addItems(["MoveJ (по суставам)", "MoveL (линейно)"])
-        if default_move == "MoveL":
+        self.move_mode_combo.addItems(
+            ["MoveJ (по суставам)", "MoveL (линейно)"])
+        dm = cfg.get("robot.movement.default_mode", "MoveJ")
+        if dm == "MoveL":
             self.move_mode_combo.setCurrentIndex(1)
-        joy_layout.addWidget(QLabel("Режим:"), 0, 0)
-        joy_layout.addWidget(self.move_mode_combo, 0, 1, 1, 3)
+        lay.addWidget(QLabel("Режим:"), 0, 0)
+        lay.addWidget(self.move_mode_combo, 0, 1, 1, 3)
 
         self.step_spin = QSpinBox()
         self.step_spin.setRange(1, 50)
-        self.step_spin.setValue(cfg.get("robot.movement.default_step", 5))
-        self.step_spin.setSuffix(" (шаг)")
-        joy_layout.addWidget(QLabel("Шаг:"), 1, 0)
-        joy_layout.addWidget(self.step_spin, 1, 1, 1, 3)
+        self.step_spin.setValue(
+            cfg.get("robot.movement.default_step", 5))
+        self.step_spin.setSuffix("°") 
+        lay.addWidget(QLabel("Шаг:"), 1, 0)
+        lay.addWidget(self.step_spin, 1, 1, 1, 3)
 
         self.joy_val_labels = []
         for i, name in enumerate(axis_labels):
-            btn_minus = QPushButton("−")
-            btn_minus.setFixedWidth(40)
+            btn_m = QPushButton("−")
+            btn_m.setFixedWidth(40)
             val_lbl = QLabel("0.00")
             val_lbl.setAlignment(Qt.AlignCenter)
             val_lbl.setStyleSheet(
-                "background-color: #eee; border: 1px solid #ccc; font-weight: bold;")
+                "background-color: #eee; border: 1px solid #ccc; "
+                "font-weight: bold;")
             val_lbl.setFixedWidth(70)
             self.joy_val_labels.append(val_lbl)
-            btn_plus = QPushButton("+")
-            btn_plus.setFixedWidth(40)
-            btn_minus.clicked.connect(lambda _, idx=i: self.move_axis(idx, -1))
-            btn_plus.clicked.connect(lambda _, idx=i: self.move_axis(idx, 1))
-            joy_layout.addWidget(QLabel(name), i+2, 0)
-            joy_layout.addWidget(btn_minus,    i+2, 1)
-            joy_layout.addWidget(val_lbl,      i+2, 2)
-            joy_layout.addWidget(btn_plus,     i+2, 3)
-        joy_group.setLayout(joy_layout)
-        left_panel.addWidget(joy_group)
+            btn_p = QPushButton("+")
+            btn_p.setFixedWidth(40)
+            btn_m.clicked.connect(
+                lambda _, idx=i: self.move_axis(idx, -1))
+            btn_p.clicked.connect(
+                lambda _, idx=i: self.move_axis(idx, 1))
+            lay.addWidget(QLabel(name), i + 2, 0)
+            lay.addWidget(btn_m, i + 2, 1)
+            lay.addWidget(val_lbl, i + 2, 2)
+            lay.addWidget(btn_p, i + 2, 3)
+        grp.setLayout(lay)
+        return grp
 
-        # ── Схват ─────────────────────────────
-        grip_group = QGroupBox("Схват")
-        grip_layout = QHBoxLayout()
-
-        btn_open  = QPushButton("Открыть")
+    def _build_grip_group(self) -> QGroupBox:
+        grp = QGroupBox("Схват")
+        lay = QHBoxLayout()
+        btn_open = QPushButton("Открыть")
         btn_close = QPushButton("Закрыть")
+        btn_open.clicked.connect(
+            lambda: self._gripper_command("open"))
+        btn_close.clicked.connect(
+            lambda: self._gripper_command("close"))
 
-        btn_open.clicked.connect(lambda: self._gripper_command("open"))
-        btn_close.clicked.connect(lambda: self._gripper_command("close"))
-
-        # Слайдер для плавного управления
         self.gripper_slider = QSlider(Qt.Horizontal)
         self.gripper_slider.setRange(0, 100)
         self.gripper_slider.setValue(0)
-        self.gripper_slider.setToolTip("0 = открыт, 100 = закрыт")
-        self.gripper_slider.valueChanged.connect(self._on_gripper_slider)
+        self.gripper_slider.setToolTip(
+            "0 = открыт, 100 = закрыт")
+        self.gripper_slider.valueChanged.connect(
+            self._on_gripper_slider)
 
         self.gripper_label = QLabel("0%")
         self.gripper_label.setFixedWidth(35)
         self.gripper_label.setAlignment(Qt.AlignCenter)
 
-        grip_layout.addWidget(btn_open)
-        grip_layout.addWidget(self.gripper_slider)
-        grip_layout.addWidget(self.gripper_label)
-        grip_layout.addWidget(btn_close)
+        lay.addWidget(btn_open)
+        lay.addWidget(self.gripper_slider)
+        lay.addWidget(self.gripper_label)
+        lay.addWidget(btn_close)
+        grp.setLayout(lay)
+        return grp
 
-        grip_group.setLayout(grip_layout)
-        left_panel.addWidget(grip_group)
-
-        # ══════════════════════════════════════════════
-        #  Блок AS5600 датчика
-        # ══════════════════════════════════════════════
-        sensor_group = QGroupBox("🔄 AS5600 — Датчик поворота")
-        sensor_group.setStyleSheet(
+    def _build_sensor_group(self, mono, joint_names) -> QGroupBox:
+        grp = QGroupBox("🔄 AS5600 × 7 — Датчики суставов")
+        grp.setStyleSheet(
             "QGroupBox { font-weight: bold; font-size: 13px; }")
-        sensor_layout = QVBoxLayout()
+        lay = QVBoxLayout()
 
-        # COM-порт
-        s_conn_row = QHBoxLayout()
-        s_conn_row.addWidget(QLabel("Порт:"))
+        # --- Подключение ---
+        conn_row = QHBoxLayout()
+        conn_row.addWidget(QLabel("Порт:"))
         self.sensor_port_combo = QComboBox()
         self.sensor_port_combo.setEditable(True)
-        self.sensor_port_combo.setMinimumWidth(120)
-        s_conn_row.addWidget(self.sensor_port_combo)
+        self.sensor_port_combo.setMinimumWidth(100)
+        conn_row.addWidget(self.sensor_port_combo)
 
         self.btn_refresh_ports = QPushButton("🔄")
-        self.btn_refresh_ports.setFixedWidth(32)
-        self.btn_refresh_ports.setToolTip("Обновить список COM-портов")
-        self.btn_refresh_ports.clicked.connect(self._refresh_sensor_ports)
-        s_conn_row.addWidget(self.btn_refresh_ports)
+        self.btn_refresh_ports.setFixedWidth(28)
+        self.btn_refresh_ports.setToolTip(
+            "Обновить список COM-портов")
+        self.btn_refresh_ports.clicked.connect(
+            self._refresh_sensor_ports)
+        conn_row.addWidget(self.btn_refresh_ports)
 
-        self.btn_sensor_connect = QPushButton("▶ Подкл.")
+        self.btn_sensor_connect = QPushButton("▶")
+        self.btn_sensor_connect.setFixedWidth(32)
         self.btn_sensor_connect.setStyleSheet(
-            "background-color: #4CAF50; color: white; font-weight: bold; padding: 5px;")
-        self.btn_sensor_connect.clicked.connect(self.connect_sensor)
-        s_conn_row.addWidget(self.btn_sensor_connect)
-        self.btn_sensor_disconnect = QPushButton("■ Откл.")
-        self.btn_sensor_disconnect.setStyleSheet("padding: 5px;")
-        self.btn_sensor_disconnect.clicked.connect(self.disconnect_sensor)
+            "background-color: #4CAF50; color: white; "
+            "font-weight: bold;")
+        self.btn_sensor_connect.setToolTip("Подключить")
+        self.btn_sensor_connect.clicked.connect(
+            self.connect_sensor)
+        conn_row.addWidget(self.btn_sensor_connect)
+
+        self.btn_sensor_disconnect = QPushButton("■")
+        self.btn_sensor_disconnect.setFixedWidth(32)
+        self.btn_sensor_disconnect.setToolTip("Отключить")
+        self.btn_sensor_disconnect.clicked.connect(
+            self.disconnect_sensor)
         self.btn_sensor_disconnect.setEnabled(False)
-        s_conn_row.addWidget(self.btn_sensor_disconnect)
-        sensor_layout.addLayout(s_conn_row)
+        conn_row.addWidget(self.btn_sensor_disconnect)
 
-        # Угол
-        self.sensor_angle_label = QLabel("Угол: —")
-        self.sensor_angle_label.setAlignment(Qt.AlignCenter)
-        self.sensor_angle_label.setStyleSheet(
-            f"font-family: {mono_font}; font-size: 22px; font-weight: bold; "
-            f"background-color: #1a1a2e; color: #0f0; padding: 8px; border-radius: 4px;")
-        sensor_layout.addWidget(self.sensor_angle_label)
+        self.btn_sensor_scan = QPushButton("SCAN")
+        self.btn_sensor_scan.setFixedWidth(50)
+        self.btn_sensor_scan.setToolTip(
+            "Пересканировать датчики")
+        self.btn_sensor_scan.clicked.connect(self._sensor_scan)
+        self.btn_sensor_scan.setEnabled(False)
+        conn_row.addWidget(self.btn_sensor_scan)
 
-        self.sensor_detail_label = QLabel("RAW: —   AGC: —   MAG: —   Магнит: —")
-        self.sensor_detail_label.setStyleSheet(
-            f"font-family: {mono_font}; font-size: 11px; color: #888;")
-        sensor_layout.addWidget(self.sensor_detail_label)
+        conn_row.addStretch()
+        lay.addLayout(conn_row)
 
-        self.sensor_bar = QProgressBar()
-        self.sensor_bar.setRange(0, 3600)
-        self.sensor_bar.setValue(0)
-        self.sensor_bar.setTextVisible(False)
-        self.sensor_bar.setFixedHeight(12)
-        self.sensor_bar.setStyleSheet("""
-            QProgressBar        { background: #333; border: 1px solid #555; border-radius: 3px; }
-            QProgressBar::chunk { background: qlineargradient(
-                x1:0, y1:0, x2:1, y2:0, stop:0 #00c853, stop:1 #76ff03); }
-        """)
-        sensor_layout.addWidget(self.sensor_bar)
+        # --- Таблица каналов ---
+        ch_count = cfg.sensor_channel_count()
+        self._ch_data = {}
+        self._ch_widgets = {}
 
-        line = QFrame(); line.setFrameShape(QFrame.HLine); line.setStyleSheet("color: #555;")
-        sensor_layout.addWidget(line)
+        ch_grid = QGridLayout()
+        ch_grid.setSpacing(3)
 
-        # Маппинг сустава
-        s_map_row = QHBoxLayout()
-        s_map_row.addWidget(QLabel("Сустав:"))
-        self.sensor_joint_combo = QComboBox()
-        self.sensor_joint_combo.addItems(joint_names)
-        default_joint = cfg.get("sensor.defaults.joint_index", 0)
-        if 0 <= default_joint < len(joint_names):
-            self.sensor_joint_combo.setCurrentIndex(default_joint)
-        s_map_row.addWidget(self.sensor_joint_combo)
+        headers = ["", "Канал → Цель", "Δ Угол",
+                    "", "RAW", "AGC", "Магнит", ""]
+        for col, hdr in enumerate(headers):
+            lbl = QLabel(hdr)
+            lbl.setStyleSheet("font-size: 10px; color: #888;")
+            ch_grid.addWidget(lbl, 0, col)
 
+        for i in range(ch_count):
+            row = i + 1
+            ch_cfg = cfg.sensor_channel_cfg(i)
+            target_label = self._channel_target_label(ch_cfg)
+
+            self._ch_data[i] = {
+                "deg": 0.0, "smoothed": 0.0,
+                "zero": ch_cfg.get("offset_deg", 0.0),
+                "raw": 0, "agc": 0, "mag": 0,
+                "status": "—", "online": False,
+            }
+
+            # Чекбокс
+            chk = QCheckBox()
+            chk.setChecked(ch_cfg.get("enabled", True))
+            chk.setToolTip(f"Включить CH{i}")
+            ch_grid.addWidget(chk, row, 0)
+
+            # CH → Цель
+            ch_lbl = QLabel(f"CH{i} → {target_label}")
+            ch_lbl.setStyleSheet(
+                "font-size: 11px; font-weight: bold;")
+            ch_lbl.setFixedWidth(95)
+            ch_grid.addWidget(ch_lbl, row, 1)
+
+            # Δ Угол
+            angle_lbl = QLabel("  —  ")
+            angle_lbl.setAlignment(
+                Qt.AlignRight | Qt.AlignVCenter)
+            angle_lbl.setStyleSheet(
+                f"font-family: {mono}; font-size: 12px; "
+                f"background-color: #1a1a2e; color: #555; "
+                f"padding: 2px 4px;")
+            angle_lbl.setFixedWidth(70)
+            ch_grid.addWidget(angle_lbl, row, 2)
+
+            # Статус-индикатор
+            status_lbl = QLabel("●")
+            status_lbl.setFixedWidth(16)
+            status_lbl.setAlignment(Qt.AlignCenter)
+            status_lbl.setStyleSheet(
+                "color: #555; font-size: 12px;")
+            status_lbl.setToolTip("нет данных")
+            ch_grid.addWidget(status_lbl, row, 3)
+
+            # RAW
+            raw_lbl = QLabel("—")
+            raw_lbl.setFixedWidth(42)
+            raw_lbl.setAlignment(Qt.AlignCenter)
+            raw_lbl.setStyleSheet(
+                f"font-family: {mono}; font-size: 10px; "
+                f"color: #777;")
+            ch_grid.addWidget(raw_lbl, row, 4)
+
+            # AGC
+            agc_lbl = QLabel("—")
+            agc_lbl.setFixedWidth(30)
+            agc_lbl.setAlignment(Qt.AlignCenter)
+            agc_lbl.setStyleSheet(
+                f"font-family: {mono}; font-size: 10px; "
+                f"color: #777;")
+            ch_grid.addWidget(agc_lbl, row, 5)
+
+            # Магнит
+            mag_lbl = QLabel("—")
+            mag_lbl.setFixedWidth(35)
+            mag_lbl.setAlignment(Qt.AlignCenter)
+            mag_lbl.setStyleSheet(
+                f"font-family: {mono}; font-size: 10px; "
+                f"color: #777;")
+            ch_grid.addWidget(mag_lbl, row, 6)
+
+            # Кнопка нуля
+            zero_btn = QPushButton("⓪")
+            zero_btn.setFixedSize(24, 22)
+            zero_btn.setToolTip(f"Установить ноль CH{i}")
+            zero_btn.clicked.connect(
+                lambda _, c=i: self._set_channel_zero(c))
+            ch_grid.addWidget(zero_btn, row, 7)
+
+            self._ch_widgets[i] = {
+                "check": chk, "angle": angle_lbl,
+                "status": status_lbl, "zero_btn": zero_btn,
+                "label": ch_lbl, "raw": raw_lbl,
+                "agc": agc_lbl, "mag": mag_lbl,
+            }
+
+        lay.addLayout(ch_grid)
+
+        # --- Глобальные контролы ---
+        global_row = QHBoxLayout()
         self.chk_sensor_enable = QCheckBox("Управление ВКЛ")
-        self.chk_sensor_enable.setStyleSheet("font-weight: bold; color: #2196F3;")
-        s_map_row.addWidget(self.chk_sensor_enable)
-        s_map_row.addStretch()
-        sensor_layout.addLayout(s_map_row)
+        self.chk_sensor_enable.setStyleSheet(
+            "font-weight: bold; color: #2196F3;")
+        global_row.addWidget(self.chk_sensor_enable)
 
-        # Калибровка
-        s_cal_row = QHBoxLayout()
-        self.btn_set_zero = QPushButton("⓪ Уст. ноль")
-        self.btn_set_zero.clicked.connect(self._set_sensor_zero)
-        s_cal_row.addWidget(self.btn_set_zero)
-
-        s_cal_row.addWidget(QLabel("Масштаб:"))
-        self.sensor_scale_spin = QDoubleSpinBox()
-        self.sensor_scale_spin.setRange(0.05, 10.0)
-        self.sensor_scale_spin.setValue(cfg.get("sensor.defaults.scale", 1.0))
-        self.sensor_scale_spin.setSingleStep(0.1)
-        s_cal_row.addWidget(self.sensor_scale_spin)
-
-        self.chk_sensor_invert = QCheckBox("Инверт.")
-        self.chk_sensor_invert.setChecked(cfg.get("sensor.defaults.invert", False))
-        s_cal_row.addWidget(self.chk_sensor_invert)
-        sensor_layout.addLayout(s_cal_row)
+        btn_all_zero = QPushButton("⓪ Все нули")
+        btn_all_zero.setFixedWidth(80)
+        btn_all_zero.clicked.connect(self._set_all_zeros)
+        global_row.addWidget(btn_all_zero)
+        global_row.addStretch()
+        lay.addLayout(global_row)
 
         # Сглаживание
-        smoothing_pct = int(cfg.get("sensor.defaults.smoothing", 0.30) * 100)
-        s_smooth_row = QHBoxLayout()
-        s_smooth_row.addWidget(QLabel("Сглаживание:"))
+        sp = int(cfg.get("sensor.defaults.smoothing", 0.30) * 100)
+        sm_row = QHBoxLayout()
+        sm_row.addWidget(QLabel("Сглаж:"))
         self.sensor_smooth_slider = QSlider(Qt.Horizontal)
         self.sensor_smooth_slider.setRange(1, 99)
-        self.sensor_smooth_slider.setValue(smoothing_pct)
-        s_smooth_row.addWidget(self.sensor_smooth_slider)
-        self.sensor_smooth_val = QLabel(f"{smoothing_pct/100:.2f}")
+        self.sensor_smooth_slider.setValue(sp)
+        sm_row.addWidget(self.sensor_smooth_slider)
+        self.sensor_smooth_val = QLabel(f"{sp / 100:.2f}")
         self.sensor_smooth_val.setFixedWidth(35)
         self.sensor_smooth_slider.valueChanged.connect(
-            lambda v: self.sensor_smooth_val.setText(f"{v/100:.2f}"))
-        s_smooth_row.addWidget(self.sensor_smooth_val)
-        sensor_layout.addLayout(s_smooth_row)
+            lambda v: self.sensor_smooth_val.setText(
+                f"{v / 100:.2f}"))
+        sm_row.addWidget(self.sensor_smooth_val)
+        lay.addLayout(sm_row)
 
-        self.sensor_mapping_label = QLabel("Ноль: 0.0°  →  Сустав: 0.0°")
-        self.sensor_mapping_label.setStyleSheet(
-            f"font-family: {mono_font}; font-size: 11px; color: #aaa;")
-        sensor_layout.addWidget(self.sensor_mapping_label)
+        # Статус
+        self.sensor_status_label = QLabel("Не подключено")
+        self.sensor_status_label.setStyleSheet(
+            f"font-family: {mono}; font-size: 10px; color: #888;")
+        lay.addWidget(self.sensor_status_label)
 
         if not SERIAL_AVAILABLE:
-            warn = QLabel("⚠ pip install pyserial — для работы датчика")
-            warn.setStyleSheet("color: #f44336; font-weight: bold;")
-            sensor_layout.addWidget(warn)
+            w = QLabel("⚠ pip install pyserial")
+            w.setStyleSheet(
+                "color: #f44336; font-weight: bold;")
+            lay.addWidget(w)
             self.btn_sensor_connect.setEnabled(False)
 
-        sensor_group.setLayout(sensor_layout)
-        left_panel.addWidget(sensor_group)
+        grp.setLayout(lay)
         self._refresh_sensor_ports()
+        return grp
 
-        # Загрузить калибровку энкодера для выбранного сустава
-        self.sensor_joint_combo.currentIndexChanged.connect(self._on_joint_combo_changed)
-        self._on_joint_combo_changed(self.sensor_joint_combo.currentIndex())
-
-        # ── Статус ────────────────────────────
-        self.status_label = QLabel("НЕ ПОДКЛЮЧЕНО")
-        self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setStyleSheet(
-            "background-color: gray; color: white; font-size: 22px; "
-            "font-weight: bold; padding: 15px;")
-        left_panel.addWidget(self.status_label)
-
-        # ════════════ ПРАВАЯ ПАНЕЛЬ ════════════
-        right_panel = QVBoxLayout()
-        main_layout.addLayout(right_panel, 3)
-
-        # ── Текущая поза TCP ──────────────────
-        pos_group = QGroupBox("Текущая поза TCP")
-        pos_layout = QGridLayout()
+    def _build_pose_group(self, tcp_labels, mono, fsz) -> QGroupBox:
+        grp = QGroupBox("Текущая поза TCP")
+        lay = QGridLayout()
         self.pos_labels = []
         for i, name in enumerate(tcp_labels):
-            pos_layout.addWidget(QLabel(f"{name}:"), i // 3, (i % 3) * 2)
+            lay.addWidget(QLabel(f"{name}:"),
+                          i // 3, (i % 3) * 2)
             lbl = QLabel("0.000")
-            lbl.setStyleSheet(f"font-family: {mono_font}; font-size: {font_size}px;")
-            pos_layout.addWidget(lbl, i // 3, (i % 3) * 2 + 1)
+            lbl.setStyleSheet(
+                f"font-family: {mono}; font-size: {fsz}px;")
+            lay.addWidget(lbl, i // 3, (i % 3) * 2 + 1)
             self.pos_labels.append(lbl)
-        pos_group.setLayout(pos_layout)
-        right_panel.addWidget(pos_group)
+        grp.setLayout(lay)
+        return grp
 
-        # ── Моменты ──────────────────────────
+    def _build_torque_group(self, joint_names, mono) -> QGroupBox:
         self.torque_group = QGroupBox("Моменты (Н·м)")
-        torque_layout = QGridLayout()
+        lay = QGridLayout()
         self.torque_labels = []
         for i in range(cfg.joint_count()):
-            torque_layout.addWidget(QLabel(f"{joint_names[i]}:"), i // 3, (i % 3) * 2)
+            lay.addWidget(QLabel(f"{joint_names[i]}:"),
+                          i // 3, (i % 3) * 2)
             lbl = QLabel("0.000")
-            lbl.setStyleSheet(f"font-family: {mono_font};")
-            torque_layout.addWidget(lbl, i // 3, (i % 3) * 2 + 1)
+            lbl.setStyleSheet(f"font-family: {mono};")
+            lay.addWidget(lbl, i // 3, (i % 3) * 2 + 1)
             self.torque_labels.append(lbl)
-        self.torque_group.setLayout(torque_layout)
+        self.torque_group.setLayout(lay)
         self.torque_group.setVisible(False)
-        right_panel.addWidget(self.torque_group)
+        return self.torque_group
 
-        # ── Табы: 3D / Камера ─────────────────
+    def _build_view_tabs(self, mono, fsz) -> QTabWidget:
         self.view_tabs = QTabWidget()
-        self.view_tabs.setStyleSheet(f"font-size: {font_size}px;")
+        self.view_tabs.setStyleSheet(f"font-size: {fsz}px;")
 
-        # 3D-вид
+        # --- 3D ---
         sim_tab = QWidget()
-        sim_layout = QVBoxLayout(sim_tab)
-        self.sim_view_label = QLabel("Подключите MuJoCo для 3D-визуализации")
+        sim_lay = QVBoxLayout(sim_tab)
+        self.sim_view_label = QLabel(
+            "Подключите MuJoCo для 3D-визуализации")
         self.sim_view_label.setMinimumSize(
             cfg.get("mujoco.rendering.width", 640),
             cfg.get("mujoco.rendering.height", 480))
         self.sim_view_label.setStyleSheet(
-            "background-color: #1a1a2e; color: #aaa; font-size: 16px;")
+            "background-color: #1a1a2e; color: #aaa; "
+            "font-size: 16px;")
         self.sim_view_label.setAlignment(Qt.AlignCenter)
-        sim_layout.addWidget(self.sim_view_label)
+        sim_lay.addWidget(self.sim_view_label)
         self.sim_info_label = QLabel("")
         self.sim_info_label.setStyleSheet(
-            f"font-family: {mono_font}; font-size: 12px; padding: 4px;")
-        sim_layout.addWidget(self.sim_info_label)
+            f"font-family: {mono}; font-size: 12px; padding: 4px;")
+        sim_lay.addWidget(self.sim_info_label)
         self.view_tabs.addTab(sim_tab, "🖥 3D Симуляция")
 
-        # Камера
+        # --- Камера ---
         cam_tab = QWidget()
-        cam_layout = QVBoxLayout(cam_tab)
+        cam_lay = QVBoxLayout(cam_tab)
 
-        cam_settings = QHBoxLayout()
-        cam_settings.addWidget(QLabel("Камера:"))
+        cam_set = QHBoxLayout()
+        cam_set.addWidget(QLabel("Камера:"))
         self.cam_index_spin = QSpinBox()
         self.cam_index_spin.setRange(0, 10)
-        self.cam_index_spin.setValue(cfg.get("camera.default_index", 0))
-        cam_settings.addWidget(self.cam_index_spin)
+        self.cam_index_spin.setValue(
+            cfg.get("camera.default_index", 0))
+        cam_set.addWidget(self.cam_index_spin)
         self.chk_virtual_cam = QCheckBox("Виртуальная (MuJoCo)")
-        self.chk_virtual_cam.setChecked(cfg.get("camera.use_virtual", False))
-        cam_settings.addWidget(self.chk_virtual_cam)
+        self.chk_virtual_cam.setChecked(
+            cfg.get("camera.use_virtual", False))
+        cam_set.addWidget(self.chk_virtual_cam)
         self.btn_cam_start = QPushButton("▶ Старт")
         self.btn_cam_start.setStyleSheet(
-            "background-color: #2196F3; color: white; font-weight: bold;")
+            "background-color: #2196F3; color: white; "
+            "font-weight: bold;")
         self.btn_cam_start.clicked.connect(self.start_camera)
-        cam_settings.addWidget(self.btn_cam_start)
+        cam_set.addWidget(self.btn_cam_start)
         self.btn_cam_stop = QPushButton("■ Стоп")
         self.btn_cam_stop.clicked.connect(self.stop_camera)
         self.btn_cam_stop.setEnabled(False)
-        cam_settings.addWidget(self.btn_cam_stop)
-        cam_settings.addStretch()
-        cam_layout.addLayout(cam_settings)
+        cam_set.addWidget(self.btn_cam_stop)
+        cam_set.addStretch()
+        cam_lay.addLayout(cam_set)
 
-        det_settings = QHBoxLayout()
-        det_settings.addWidget(QLabel("Мин.площадь:"))
+        det_set = QHBoxLayout()
+        det_set.addWidget(QLabel("Мин.площадь:"))
         self.min_area_spin = QSpinBox()
         self.min_area_spin.setRange(50, 50000)
-        self.min_area_spin.setValue(cfg.get("detection.min_area", 500))
+        self.min_area_spin.setValue(
+            cfg.get("detection.min_area", 500))
         self.min_area_spin.setSingleStep(100)
-        self.min_area_spin.valueChanged.connect(self._on_min_area_changed)
-        det_settings.addWidget(self.min_area_spin)
+        self.min_area_spin.valueChanged.connect(
+            self._on_min_area_changed)
+        det_set.addWidget(self.min_area_spin)
 
         self.color_checks = {}
-        for color_name, color_data in cfg.color_configs().items():
-            bgr = color_data.get("draw_bgr", [255, 255, 255])
-            cb = QCheckBox(color_name)
-            cb.setChecked(color_data.get("enabled", True))
+        for cn, cd in cfg.color_configs().items():
+            bgr = cd.get("draw_bgr", [255, 255, 255])
+            cb = QCheckBox(cn)
+            cb.setChecked(cd.get("enabled", True))
             r, g, b = bgr[2], bgr[1], bgr[0]
-            cb.setStyleSheet(f"color: rgb({r},{g},{b}); font-weight: bold;")
-            cb.stateChanged.connect(lambda state, cn=color_name: self._on_color_toggle(cn, state))
-            det_settings.addWidget(cb)
-            self.color_checks[color_name] = cb
-        det_settings.addStretch()
-        cam_layout.addLayout(det_settings)
+            cb.setStyleSheet(
+                f"color: rgb({r},{g},{b}); font-weight: bold;")
+            cb.stateChanged.connect(
+                lambda s, n=cn: self._on_color_toggle(n, s))
+            det_set.addWidget(cb)
+            self.color_checks[cn] = cb
+        det_set.addStretch()
+        cam_lay.addLayout(det_set)
 
         self.video_label = QLabel("Камера не подключена")
         self.video_label.setMinimumSize(640, 480)
         self.video_label.setStyleSheet(
-            "background-color: #1a1a2e; color: #aaa; font-size: 16px;")
+            "background-color: #1a1a2e; color: #aaa; "
+            "font-size: 16px;")
         self.video_label.setAlignment(Qt.AlignCenter)
-        cam_layout.addWidget(self.video_label)
+        cam_lay.addWidget(self.video_label)
 
         self.detection_label = QLabel("Объекты: —")
         self.detection_label.setStyleSheet(
-            f"font-family: {mono_font}; font-size: 12px;")
+            f"font-family: {mono}; font-size: 12px;")
         self.detection_label.setWordWrap(True)
-        cam_layout.addWidget(self.detection_label)
+        cam_lay.addWidget(self.detection_label)
         self.view_tabs.addTab(cam_tab, "📷 Камера + Детекция")
-        right_panel.addWidget(self.view_tabs)
+        return self.view_tabs
 
-        # ── Логи ──────────────────────────────
-        log_group = QGroupBox("Логи")
-        log_layout = QVBoxLayout()
+    def _build_log_group(self) -> QGroupBox:
+        grp = QGroupBox("Логи")
+        lay = QVBoxLayout()
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumHeight(120)
-        log_layout.addWidget(self.log_view)
+        lay.addWidget(self.log_view)
         save_row = QHBoxLayout()
-        self.path_edit = QLineEdit(cfg.get("logging.file", "robot_logs.txt"))
+        self.path_edit = QLineEdit(
+            cfg.get("logging.file", "robot_logs.txt"))
         btn_save = QPushButton("Сохранить")
         btn_save.clicked.connect(self.save_logs)
         save_row.addWidget(self.path_edit)
         save_row.addWidget(btn_save)
-        log_layout.addLayout(save_row)
-        log_group.setLayout(log_layout)
-        right_panel.addWidget(log_group)
+        lay.addLayout(save_row)
+        grp.setLayout(lay)
+        return grp
 
     # ══════════════════════════════════════════════════════════
     #  Подключение / отключение РОБОТА
@@ -748,27 +926,34 @@ class RobotControlGUI(QMainWindow):
         target = self.conn_target_edit.text().strip()
         try:
             self.robot = RobotFactory.create(mode)
-            success = self.robot.connect(target, enable_rendering=True)
+            success = self.robot.connect(
+                target, enable_rendering=True)
             if success:
                 self.btn_connect.setEnabled(False)
                 self.btn_disconnect.setEnabled(True)
                 self.mode_selector.setEnabled(False)
-                mode_text = "🤖 Реальный" if mode == RobotMode.REAL else "🖥 MuJoCo"
-                self.mode_indicator.setText(f"✅ {mode_text}")
+                mt = ("🤖 Реальный" if mode == RobotMode.REAL
+                      else "🖥 MuJoCo")
+                self.mode_indicator.setText(f"✅ {mt}")
                 self.mode_indicator.setStyleSheet(
                     "background-color: #4CAF50; color: white; "
-                    "font-size: 13px; padding: 8px; border-radius: 4px;")
-                self.torque_group.setVisible(mode == RobotMode.SIMULATION)
-                self.chk_virtual_cam.setChecked(mode == RobotMode.SIMULATION)
+                    "font-size: 13px; padding: 8px; "
+                    "border-radius: 4px;")
+                self.torque_group.setVisible(
+                    mode == RobotMode.SIMULATION)
+                self.chk_virtual_cam.setChecked(
+                    mode == RobotMode.SIMULATION)
                 if mode == RobotMode.SIMULATION:
                     self._start_sim_render()
                     self.view_tabs.setCurrentIndex(0)
-                logger.add(f"Подключено: {mode_text}")
+                logger.add(f"Подключено: {mt}")
             else:
-                QMessageBox.warning(self, "Ошибка", "Не удалось подключиться")
+                QMessageBox.warning(
+                    self, "Ошибка", "Не удалось подключиться")
                 self.robot = None
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Ошибка:\n{e}")
+            QMessageBox.critical(
+                self, "Ошибка", f"Ошибка:\n{e}")
             logger.add(f"Ошибка: {e}")
 
     def disconnect_robot(self):
@@ -783,33 +968,39 @@ class RobotControlGUI(QMainWindow):
         self.mode_selector.setEnabled(True)
         self.mode_indicator.setText("Не подключено")
         self.mode_indicator.setStyleSheet(
-            "background-color: #666; color: white; font-size: 13px; "
-            "padding: 8px; border-radius: 4px;")
+            "background-color: #666; color: white; "
+            "font-size: 13px; padding: 8px; border-radius: 4px;")
         self.status_label.setText("НЕ ПОДКЛЮЧЕНО")
         self.status_label.setStyleSheet(
-            "background-color: gray; color: white; font-size: 22px; padding: 15px;")
-        self.sim_view_label.setText("Подключите MuJoCo для 3D-визуализации")
+            "background-color: gray; color: white; "
+            "font-size: 22px; padding: 15px;")
+        self.sim_view_label.setText(
+            "Подключите MuJoCo для 3D-визуализации")
         self.sim_view_label.setPixmap(QPixmap())
         self.sim_info_label.setText("")
 
     def _on_mode_selector_changed(self, index):
         if index == 0:
-            self.conn_target_edit.setText(cfg.get("robot.real.port", "COM39"))
+            self.conn_target_edit.setText(
+                cfg.get("robot.real.port", "COM39"))
             self.conn_target_edit.setPlaceholderText("COM-порт")
         else:
-            self.conn_target_edit.setText(cfg.get("robot.simulation.xml_path", ""))
-            self.conn_target_edit.setPlaceholderText("Путь к XML (пусто = встроенная)")
+            self.conn_target_edit.setText(
+                cfg.get("robot.simulation.xml_path", ""))
+            self.conn_target_edit.setPlaceholderText(
+                "Путь к XML (пусто = встроенная)")
 
     # ══════════════════════════════════════════════════════════
-    #  3D-визуализация MuJoCo
+    #  3D-визуализация
     # ══════════════════════════════════════════════════════════
     def _start_sim_render(self):
         if self.sim_render_thread:
             self._stop_sim_render()
-        self.sim_render_thread = SimRenderThread(robot=self.robot, parent=self)
-        self.sim_render_thread.frame_ready.connect(self._display_sim_frame)
+        self.sim_render_thread = SimRenderThread(
+            robot=self.robot, parent=self)
+        self.sim_render_thread.frame_ready.connect(
+            self._display_sim_frame)
         self.sim_render_thread.start()
-        logger.add("[GUI] 3D-визуализация запущена")
 
     def _stop_sim_render(self):
         if self.sim_render_thread:
@@ -819,11 +1010,13 @@ class RobotControlGUI(QMainWindow):
     def _display_sim_frame(self, frame: np.ndarray):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
-        q_img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
-        pixmap = QPixmap.fromImage(q_img).scaled(
-            self.sim_view_label.width(), self.sim_view_label.height(),
+        q_img = QImage(rgb.data, w, h, ch * w,
+                       QImage.Format_RGB888)
+        pix = QPixmap.fromImage(q_img).scaled(
+            self.sim_view_label.width(),
+            self.sim_view_label.height(),
             Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.sim_view_label.setPixmap(pixmap)
+        self.sim_view_label.setPixmap(pix)
         if self.robot and self.robot.is_connected:
             info = self.robot.get_info()
             self.sim_info_label.setText(
@@ -837,14 +1030,18 @@ class RobotControlGUI(QMainWindow):
         if self.camera_thread and self.camera_thread.isRunning():
             self.stop_camera()
         idx = self.cam_index_spin.value()
-        use_virtual = self.chk_virtual_cam.isChecked()
-        self.camera_thread = CameraThread(camera_index=idx, robot=self.robot, parent=self)
-        self.camera_thread.use_virtual_camera = use_virtual
+        virt = self.chk_virtual_cam.isChecked()
+        self.camera_thread = CameraThread(
+            camera_index=idx, robot=self.robot, parent=self)
+        self.camera_thread.use_virtual_camera = virt
         self.camera_thread.min_area = self.min_area_spin.value()
         for cn, cb in self.color_checks.items():
-            self.camera_thread.set_color_enabled(cn, cb.isChecked())
-        self.camera_thread.frame_ready.connect(self._display_cam_frame)
-        self.camera_thread.detection_info.connect(self._update_detection_info)
+            self.camera_thread.set_color_enabled(
+                cn, cb.isChecked())
+        self.camera_thread.frame_ready.connect(
+            self._display_cam_frame)
+        self.camera_thread.detection_info.connect(
+            self._update_detection_info)
         self.camera_thread.start()
         self.btn_cam_start.setEnabled(False)
         self.btn_cam_stop.setEnabled(True)
@@ -861,22 +1058,26 @@ class RobotControlGUI(QMainWindow):
     def _display_cam_frame(self, frame: np.ndarray):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
-        q_img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
-        pixmap = QPixmap.fromImage(q_img).scaled(
-            self.video_label.width(), self.video_label.height(),
+        q_img = QImage(rgb.data, w, h, ch * w,
+                       QImage.Format_RGB888)
+        pix = QPixmap.fromImage(q_img).scaled(
+            self.video_label.width(),
+            self.video_label.height(),
             Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.video_label.setPixmap(pixmap)
+        self.video_label.setPixmap(pix)
 
     def _update_detection_info(self, detections: list):
         if not detections:
             self.detection_label.setText("Объекты: —")
             return
-        by_color = {}
+        by_c = {}
         for d in detections:
-            by_color.setdefault(d["color"], []).append(d)
-        lines = [f"{c}: {len(items)} шт." for c, items in by_color.items()]
+            by_c.setdefault(d["color"], []).append(d)
+        parts = [f"{c}: {len(v)} шт."
+                 for c, v in by_c.items()]
         self.detection_label.setText(
-            f"Объектов: {len(detections)}  |  " + "  ".join(lines))
+            f"Объектов: {len(detections)}  |  "
+            + "  ".join(parts))
 
     def _on_min_area_changed(self, value):
         if self.camera_thread:
@@ -884,57 +1085,103 @@ class RobotControlGUI(QMainWindow):
 
     def _on_color_toggle(self, color_name, state):
         if self.camera_thread:
-            self.camera_thread.set_color_enabled(color_name, state == Qt.Checked)
+            self.camera_thread.set_color_enabled(
+                color_name, state == Qt.Checked)
 
     # ══════════════════════════════════════════════════════════
-    #  AS5600
+    #  Схват
     # ══════════════════════════════════════════════════════════
+    def _gripper_command(self, action: str):
+        if not self.robot or not self.robot.is_connected:
+            logger.add("Робот не подключён!")
+            return
+        inv = cfg.get("gripper.gui_invert", False)
+        if action == "open":
+            val = 1.0 if inv else 0.0
+        else:
+            val = 0.0 if inv else 1.0
+        try:
+            self.robot.set_gripper(val)
+            sp = (int((1.0 - val) * 100) if inv
+                  else int(val * 100))
+            self.gripper_slider.blockSignals(True)
+            self.gripper_slider.setValue(sp)
+            self.gripper_slider.blockSignals(False)
+            self.gripper_label.setText(f"{sp}%")
+        except Exception as e:
+            logger.add(f"[Схват] Ошибка: {e}")
+
+    def _on_gripper_slider(self, sv: int):
+        if not self.robot or not self.robot.is_connected:
+            return
+        inv = cfg.get("gripper.gui_invert", False)
+        f = sv / 100.0
+        val = (1.0 - f) if inv else f
+        try:
+            self.robot.set_gripper(val)
+            self.gripper_label.setText(f"{sv}%")
+        except Exception as e:
+            logger.add(f"[Схват] Ошибка: {e}")
+
+    # ══════════════════════════════════════════════════════════
+    #  AS5600 × 7
+    # ══════════════════════════════════════════════════════════
+    def _channel_target_label(self, ch_cfg: dict) -> str:
+        target = ch_cfg.get("target", "joint")
+        if target == "gripper":
+            return "Grip"
+        ji = ch_cfg.get("joint_index",
+                        ch_cfg.get("channel", 0))
+        names = cfg.joint_names()
+        if 0 <= ji < len(names):
+            return names[ji]
+        return f"J{ji + 1}"
 
     def _refresh_sensor_ports(self):
         if not SERIAL_AVAILABLE:
             return
-        current = self.sensor_port_combo.currentText()
+        cur = self.sensor_port_combo.currentText()
         self.sensor_port_combo.clear()
         ports = serial.tools.list_ports.comports()
         for p in sorted(ports, key=lambda x: x.device):
-            self.sensor_port_combo.addItem(f"{p.device}", userData=p.device)
+            self.sensor_port_combo.addItem(
+                p.device, userData=p.device)
         if self.sensor_port_combo.count() == 0:
-            self.sensor_port_combo.addItem(cfg.get("sensor.port", "COM3"))
-        idx = self.sensor_port_combo.findText(current)
+            self.sensor_port_combo.addItem(
+                cfg.get("sensor.port", "COM3"))
+        idx = self.sensor_port_combo.findText(cur)
         if idx >= 0:
             self.sensor_port_combo.setCurrentIndex(idx)
-        logger.add(f"[AS5600] Найдено портов: {self.sensor_port_combo.count()}")
-
-    def _on_joint_combo_changed(self, index: int):
-        """При смене сустава — загрузить калибровку энкодера из конфига."""
-        enc = cfg.joint_encoder_cfg(index)
-        self.sensor_scale_spin.setValue(enc.get("scale", 1.0))
-        self.chk_sensor_invert.setChecked(enc.get("invert", False))
-        # offset из конфига можно добавить в sensor_zero_offset
-        self.sensor_zero_offset = enc.get("offset_deg", 0.0)
 
     def connect_sensor(self):
         if not SERIAL_AVAILABLE:
-            QMessageBox.warning(self, "Ошибка",
-                                "Установите pyserial:\n  pip install pyserial")
+            QMessageBox.warning(
+                self, "Ошибка", "pip install pyserial")
             return
         if self.sensor_thread is not None:
             self.disconnect_sensor()
         port = self.sensor_port_combo.currentData()
         if port is None:
-            port = self.sensor_port_combo.currentText().split(" ")[0].strip()
-        robot_port = self.conn_target_edit.text().strip().upper()
-        if port.upper() == robot_port and self.robot and self.robot.is_connected:
-            QMessageBox.warning(self, "Конфликт",
-                                f"Порт {port} уже используется роботом!")
+            port = (self.sensor_port_combo.currentText()
+                    .split(" ")[0].strip())
+        rp = self.conn_target_edit.text().strip().upper()
+        if (port.upper() == rp
+                and self.robot and self.robot.is_connected):
+            QMessageBox.warning(
+                self, "Конфликт", f"Порт {port} занят роботом!")
             return
-        baudrate = cfg.get("sensor.baudrate", 115200)
-        self.sensor_thread = SensorReaderThread(port, baudrate, parent=self)
-        self.sensor_thread.data_received.connect(self._on_sensor_data)
-        self.sensor_thread.connection_changed.connect(self._on_sensor_connection)
+        self.sensor_thread = SensorReaderThread(
+            port, parent=self)
+        self.sensor_thread.data_received.connect(
+            self._on_sensor_data)
+        self.sensor_thread.channel_error.connect(
+            self._on_sensor_error)
+        self.sensor_thread.connection_changed.connect(
+            self._on_sensor_connection)
         self.sensor_thread.start()
         self.btn_sensor_connect.setEnabled(False)
         self.btn_sensor_disconnect.setEnabled(True)
+        self.btn_sensor_scan.setEnabled(True)
         self.sensor_port_combo.setEnabled(False)
         self.btn_refresh_ports.setEnabled(False)
 
@@ -946,105 +1193,182 @@ class RobotControlGUI(QMainWindow):
         self.sensor_connected = False
         self.btn_sensor_connect.setEnabled(True)
         self.btn_sensor_disconnect.setEnabled(False)
+        self.btn_sensor_scan.setEnabled(False)
         self.sensor_port_combo.setEnabled(True)
         self.btn_refresh_ports.setEnabled(True)
         mono = cfg.get("gui.font_monospace", "Consolas")
-        self.sensor_angle_label.setText("Угол: —")
-        self.sensor_angle_label.setStyleSheet(
-            f"font-family: {mono}; font-size: 22px; font-weight: bold; "
-            f"background-color: #1a1a2e; color: #0f0; padding: 8px; border-radius: 4px;")
-        self.sensor_detail_label.setText("RAW: —   AGC: —   MAG: —   Магнит: —")
-        self.sensor_bar.setValue(0)
-        self.sensor_mapping_label.setText("Ноль: 0.0°  →  Сустав: 0.0°")
+        for ch, w in self._ch_widgets.items():
+            w["angle"].setText("  —  ")
+            w["angle"].setStyleSheet(
+                f"font-family: {mono}; font-size: 12px; "
+                f"background-color: #1a1a2e; color: #555; "
+                f"padding: 2px 4px;")
+            w["status"].setStyleSheet(
+                "color: #555; font-size: 12px;")
+            w["status"].setToolTip("нет данных")
+            w["raw"].setText("—")
+            w["agc"].setText("—")
+            w["mag"].setText("—")
+            self._ch_data[ch]["online"] = False
+        self.sensor_status_label.setText("Не подключено")
 
-    def _on_sensor_connection(self, connected: bool, message: str):
+    def _on_sensor_connection(self, connected: bool, msg: str):
         self.sensor_connected = connected
-        if connected:
-            self.sensor_detail_label.setStyleSheet(
-                f"font-family: {cfg.get('gui.font_monospace', 'Consolas')}; "
-                f"font-size: 11px; color: #4CAF50;")
-        else:
-            self.sensor_detail_label.setStyleSheet(
-                f"font-family: {cfg.get('gui.font_monospace', 'Consolas')}; "
-                f"font-size: 11px; color: #888;")
-            if self.sensor_thread is not None:
-                self.btn_sensor_connect.setEnabled(True)
-                self.btn_sensor_disconnect.setEnabled(False)
-                self.sensor_port_combo.setEnabled(True)
-                self.btn_refresh_ports.setEnabled(True)
-                self.sensor_thread = None
-        self.sensor_detail_label.setText(message)
-        logger.add(f"[AS5600] {message}")
+        self.sensor_status_label.setText(msg)
+        if not connected and self.sensor_thread is not None:
+            self.btn_sensor_connect.setEnabled(True)
+            self.btn_sensor_disconnect.setEnabled(False)
+            self.btn_sensor_scan.setEnabled(False)
+            self.sensor_port_combo.setEnabled(True)
+            self.btn_refresh_ports.setEnabled(True)
+            self.sensor_thread = None
 
-    def _on_sensor_data(self, deg: float, raw: int, agc: int, mag: int, status: str):
-        self.sensor_current_deg = deg
+    def _on_sensor_data(self, ch: int, deg: float,
+                        raw: int, agc: int,
+                        mag: int, status: str):
+        if ch not in self._ch_data:
+            return
+        d = self._ch_data[ch]
+        d["deg"] = deg
+        d["raw"] = raw
+        d["agc"] = agc
+        d["mag"] = mag
+        d["status"] = status
+        d["online"] = True
+
         alpha = self.sensor_smooth_slider.value() / 100.0
-        self.sensor_smoothed_deg = alpha * deg + (1.0 - alpha) * self.sensor_smoothed_deg
-        self.sensor_angle_label.setText(f"{deg:.1f}°")
-        color_map = {"OK": "#0f0", "WEAK": "#ff0", "STRONG": "#f80"}
+        d["smoothed"] = alpha * deg + (1 - alpha) * d["smoothed"]
+
+        w = self._ch_widgets.get(ch)
+        if not w:
+            return
+
+        delta = self._calc_channel_delta(ch)
+        w["angle"].setText(f"{delta:+.1f}°")
+
+        color_map = {"OK": "#0f0", "WEAK": "#ff0",
+                     "STRONG": "#f80", "NONE": "#f00"}
         color = color_map.get(status, "#f00")
+
         mono = cfg.get("gui.font_monospace", "Consolas")
-        self.sensor_angle_label.setStyleSheet(
-            f"font-family: {mono}; font-size: 22px; font-weight: bold; "
-            f"background-color: #1a1a2e; color: {color}; padding: 8px; border-radius: 4px;")
-        self.sensor_detail_label.setText(
-            f"RAW: {raw}   AGC: {agc}   MAG: {mag}   Магнит: {status}")
-        self.sensor_bar.setValue(int(deg * 10))
-        delta = self._calc_joint_delta()
-        joint_idx = self.sensor_joint_combo.currentIndex()
-        joint_names = cfg.joint_names()
-        jname = joint_names[joint_idx] if joint_idx < len(joint_names) else f"J{joint_idx+1}"
-        self.sensor_mapping_label.setText(
-            f"Ноль: {self.sensor_zero_offset:.1f}°  →  {jname}: {delta:.1f}°")
+        w["angle"].setStyleSheet(
+            f"font-family: {mono}; font-size: 12px; "
+            f"background-color: #1a1a2e; color: {color}; "
+            f"padding: 2px 4px;")
+        w["status"].setStyleSheet(
+            f"color: {color}; font-size: 12px;")
+        w["status"].setToolTip(
+            f"RAW:{raw} AGC:{agc} MAG:{mag} {status}")
 
-    def _set_sensor_zero(self):
-        self.sensor_zero_offset = self.sensor_current_deg
-        self.sensor_smoothed_deg = self.sensor_current_deg
-        logger.add(f"[AS5600] Ноль установлен: {self.sensor_zero_offset:.1f}°")
+        w["raw"].setText(str(raw))
+        w["agc"].setText(str(agc))
+        w["mag"].setText(status[:3])
 
-    def _calc_joint_delta(self) -> float:
-        scale     = self.sensor_scale_spin.value()
-        direction = -1.0 if self.chk_sensor_invert.isChecked() else 1.0
-        delta = self.sensor_smoothed_deg - self.sensor_zero_offset
+    def _on_sensor_error(self, ch: int, error: str):
+        if ch in self._ch_data:
+            self._ch_data[ch]["online"] = False
+            self._ch_data[ch]["status"] = error
+        w = self._ch_widgets.get(ch)
+        if w:
+            w["angle"].setText(" ERR ")
+            w["status"].setStyleSheet(
+                "color: #f00; font-size: 12px;")
+            w["status"].setToolTip(error)
+
+    def _sensor_scan(self):
+        if self.sensor_thread:
+            self.sensor_thread.send_command("SCAN")
+
+    def _set_channel_zero(self, ch: int):
+        if ch in self._ch_data:
+            d = self._ch_data[ch]
+            d["zero"] = d["deg"]
+            d["smoothed"] = d["deg"]
+            logger.add(
+                f"[Sensors] CH{ch} ноль: {d['zero']:.1f}°")
+
+    def _set_all_zeros(self):
+        for ch in self._ch_data:
+            if self._ch_data[ch]["online"]:
+                self._set_channel_zero(ch)
+        logger.add("[Sensors] Все нули установлены")
+
+    def _calc_channel_delta(self, ch: int) -> float:
+        d = self._ch_data.get(ch)
+        if d is None:
+            return 0.0
+        ch_cfg = cfg.sensor_channel_cfg(ch)
+        scale = ch_cfg.get("scale", 1.0)
+        inv = ch_cfg.get("invert", False)
+        direction = -1.0 if inv else 1.0
+        delta = d["smoothed"] - d["zero"]
         while delta > 180.0:
             delta -= 360.0
         while delta < -180.0:
             delta += 360.0
         return delta * scale * direction
 
-    def _apply_sensor_to_joint(self):
-        """Применение данных AS5600 к суставу."""
+    def _apply_sensors_to_joints(self):
         if not self.robot or not self.robot.is_connected:
             return
         if not self.chk_sensor_enable.isChecked():
             return
         if not self.sensor_connected:
             return
-        try:
-            joint_idx = self.sensor_joint_combo.currentIndex()
-            delta_deg = self._calc_joint_delta()
 
-            # Проверка лимитов из конфига
-            joints_cfg = cfg.get("joints", [])
-            if joint_idx < len(joints_cfg):
-                jcfg = joints_cfg[joint_idx]
-                min_d = jcfg.get("min_deg", -360)
-                max_d = jcfg.get("max_deg",  360)
-                delta_deg = max(min_d, min(max_d, delta_deg))
+        joints_cfg = cfg.get("joints", [])
+        joints = list(self.robot.get_joint_positions())
+        changed = False
 
-                # ── gui_invert: сенсор тоже должен учитывать ──
-                if jcfg.get("gui_invert", False):
-                    delta_deg = -delta_deg
+        for ch, d in self._ch_data.items():
+            if not d["online"]:
+                continue
+            w = self._ch_widgets.get(ch)
+            if w and not w["check"].isChecked():
+                continue
+            ch_cfg = cfg.sensor_channel_cfg(ch)
+            if not ch_cfg.get("enabled", True):
+                continue
 
-            target_rad = math.radians(delta_deg)
-            joints = list(self.robot.get_joint_positions())
-            joints[joint_idx] = target_rad
-            self.robot.move_j(joints, blocking=False)
-        except Exception as e:
-            logger.add(f"[AS5600] Ошибка управления: {e}")
+            target = ch_cfg.get("target", "joint")
+            delta_deg = self._calc_channel_delta(ch)
+
+            if target == "joint":
+                ji = ch_cfg.get("joint_index", ch)
+                if 0 <= ji < len(joints):
+                    if ji < len(joints_cfg):
+                        jc = joints_cfg[ji]
+                        mn = jc.get("min_deg", -360)
+                        mx = jc.get("max_deg", 360)
+                        delta_deg = max(mn, min(mx, delta_deg))
+                    joints[ji] = math.radians(delta_deg)
+                    changed = True
+
+            elif target == "gripper":
+                cr = cfg.get("gripper.close_rad", 1.3)
+                cd = math.degrees(cr)
+                gv = abs(delta_deg) / cd if cd > 0 else 0.0
+                gv = max(0.0, min(1.0, gv))
+                if cfg.get("gripper.gui_invert", False):
+                    gv = 1.0 - gv
+                try:
+                    self.robot.set_gripper(gv)
+                    sp = int(gv * 100)
+                    self.gripper_slider.blockSignals(True)
+                    self.gripper_slider.setValue(sp)
+                    self.gripper_slider.blockSignals(False)
+                    self.gripper_label.setText(f"{sp}%")
+                except Exception as e:
+                    logger.add(f"[Sensors] Ошибка схвата: {e}")
+
+        if changed:
+            try:
+                self.robot.move_j(joints, blocking=False)
+            except Exception as e:
+                logger.add(f"[Sensors] Ошибка: {e}")
 
     # ══════════════════════════════════════════════════════════
-    #  Общие обработчики
+    #  Общие
     # ══════════════════════════════════════════════════════════
     def _safe_call(self, func):
         if not self.robot or not self.robot.is_connected:
@@ -1059,173 +1383,120 @@ class RobotControlGUI(QMainWindow):
         self._safe_call(lambda: self.robot.move_to_home())
 
     def move_axis(self, axis: int, direction: int):
-        """
-        Перемещение одного сустава/оси на один шаг.
-        
-        axis:      индекс оси (0–5)
-        direction: +1 или −1 (от кнопок + / −)
-        """
+        """Шаг задаётся в градусах (step_spin = 5 → 5°)."""
         if not self.robot or not self.robot.is_connected:
             return
 
-        step = self.step_spin.value() / 100.0  # рад для MoveJ, м для MoveL
+        # ── Шаг в ГРАДУСАХ, конвертируем в радианы ──
+        step_deg = self.step_spin.value()          # 5 → 5°
+        step_rad = math.radians(step_deg)          # 5° → 0.0873 рад
 
         try:
-            if self.move_mode_combo.currentText().startswith("MoveJ"):
+            if self.move_mode_combo.currentText().startswith(
+                    "MoveJ"):
                 joints = list(self.robot.get_joint_positions())
+                jc = cfg.get("joints", [])
 
-                # ── Учитываем gui_invert из конфига ──
-                joints_cfg = cfg.get("joints", [])
-                effective_dir = direction
-                if axis < len(joints_cfg):
-                    if joints_cfg[axis].get("gui_invert", False):
-                        effective_dir = -direction
+                edir = direction
+                if axis < len(jc):
+                    if jc[axis].get("gui_invert", False):
+                        edir = -direction
 
-                joints[axis] += effective_dir * step
+                joints[axis] += edir * step_rad
 
-                # ── Ограничение по лимитам (рад) ──
-                if axis < len(joints_cfg):
-                    min_rad = math.radians(joints_cfg[axis].get("min_deg", -360))
-                    max_rad = math.radians(joints_cfg[axis].get("max_deg",  360))
-                    joints[axis] = max(min_rad, min(max_rad, joints[axis]))
+                # Ограничение по лимитам
+                if axis < len(jc):
+                    mn = math.radians(
+                        jc[axis].get("min_deg", -360))
+                    mx = math.radians(
+                        jc[axis].get("max_deg", 360))
+                    joints[axis] = max(mn, min(mx, joints[axis]))
 
                 self.robot.move_j(joints, blocking=False)
             else:
                 pose = list(self.robot.get_cartesian_pose())
-                pose[axis] += direction * step
+                # Для линейного: шаг в метрах (mm)
+                step_m = step_deg / 1000.0  # 5 → 0.005 м = 5 мм
+                pose[axis] += direction * step_m
                 self.robot.move_l(pose, blocking=False)
         except Exception as e:
-            logger.add(f"Ошибка движения: {e}")
+            logger.add(f"Ошибка: {e}")
 
     # ══════════════════════════════════════════════════════════
-    #  Управление схватом
-    # ══════════════════════════════════════════════════════════
-
-    def _gripper_command(self, action: str):
-        """
-        Открыть / закрыть схват с учётом gui_invert.
-        
-        Конвенция в mujoco_robot.py:
-          set_gripper(0.0) → open_rad  (раскрыт)
-          set_gripper(1.0) → close_rad (сжат)
-        """
-        if not self.robot or not self.robot.is_connected:
-            logger.add("Робот не подключён!")
-            return
-
-        invert = cfg.get("gripper.gui_invert", False)
-
-        if action == "open":
-            value = 1.0 if invert else 0.0
-        else:  # close
-            value = 0.0 if invert else 1.0
-
-        try:
-            self.robot.set_gripper(value)
-            # Обновляем слайдер
-            slider_pos = int((1.0 - value) * 100) if invert else int(value * 100)
-            self.gripper_slider.blockSignals(True)
-            self.gripper_slider.setValue(slider_pos)
-            self.gripper_slider.blockSignals(False)
-            self.gripper_label.setText(f"{slider_pos}%")
-            logger.add(f"[Схват] {action.upper()} → ctrl={value:.2f}")
-        except Exception as e:
-            logger.add(f"[Схват] Ошибка: {e}")
-
-    def _on_gripper_slider(self, slider_value: int):
-        """
-        Слайдер: 0 = открыт, 100 = закрыт (с точки зрения GUI).
-        Внутренне конвертируется с учётом gui_invert.
-        """
-        if not self.robot or not self.robot.is_connected:
-            return
-
-        invert = cfg.get("gripper.gui_invert", False)
-
-        # slider 0→100 = GUI "открыт→закрыт"
-        # set_gripper(0.0) = физически открыт, set_gripper(1.0) = физически закрыт
-        fraction = slider_value / 100.0
-
-        if invert:
-            value = 1.0 - fraction
-        else:
-            value = fraction
-
-        try:
-            self.robot.set_gripper(value)
-            self.gripper_label.setText(f"{slider_value}%")
-        except Exception as e:
-            logger.add(f"[Схват] Ошибка: {e}")
-            
-    # ══════════════════════════════════════════════════════════
-    #  Таймер обновления
+    #  Таймер
     # ══════════════════════════════════════════════════════════
     def setup_timer(self):
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_info)
-        self.timer.start(cfg.get("application.update_interval_ms", 200))
+        self.timer.start(
+            cfg.get("application.update_interval_ms", 200))
 
     def update_info(self):
-        """Периодическое обновление GUI (по таймеру)."""
         if not self.robot or not self.robot.is_connected:
             return
         try:
             cart = self.robot.get_cartesian_pose()
-            for i, val in enumerate(cart):
-                self.pos_labels[i].setText(f"{val:+.3f}")
+            for i, v in enumerate(cart):
+                self.pos_labels[i].setText(f"{v:+.3f}")
 
-            is_joint = self.move_mode_combo.currentText().startswith("MoveJ")
-            joints_cfg = cfg.get("joints", [])
+            is_j = self.move_mode_combo.currentText() \
+                       .startswith("MoveJ")
+            jc = cfg.get("joints", [])
 
-            if is_joint:
+            if is_j:
                 joints = self.robot.get_joint_positions()
-                for i, val in enumerate(joints):
-                    deg = np.rad2deg(val)
-
-                    # ── Отображаем угол с учётом gui_invert ──
-                    # Чтобы пользователь видел: + = рука вверх / от стола
-                    if i < len(joints_cfg) and joints_cfg[i].get("gui_invert", False):
+                for i, v in enumerate(joints):
+                    deg = np.rad2deg(v)
+                    if (i < len(jc)
+                            and jc[i].get("gui_invert", False)):
                         deg = -deg
-
                     self.joy_val_labels[i].setText(f"{deg:.1f}°")
             else:
-                for i, val in enumerate(cart):
-                    self.joy_val_labels[i].setText(f"{val:.3f}")
+                for i, v in enumerate(cart):
+                    self.joy_val_labels[i].setText(f"{v:.3f}")
 
             if self.torque_group.isVisible():
                 torques = self.robot.get_joint_torques()
-                for i, val in enumerate(torques):
-                    self.torque_labels[i].setText(f"{val:+.3f}")
+                for i, v in enumerate(torques):
+                    self.torque_labels[i].setText(f"{v:+.3f}")
 
-            self._apply_sensor_to_joint()
+            self._apply_sensors_to_joints()
 
             state = self.robot.state
-            status_map = {
-                RobotState.IDLE:      ("ГОТОВ",    "green",   "white"),
-                RobotState.MOVING:    ("ДВИЖЕНИЕ", "#2196F3", "white"),
-                RobotState.PAUSED:    ("ПАУЗА",   "yellow",  "black"),
-                RobotState.EMERGENCY: ("⛔ СТОП",  "red",     "white"),
-                RobotState.ERROR:     ("ОШИБКА",   "#ff5722", "white"),
+            sm = {
+                RobotState.IDLE:
+                    ("ГОТОВ", "green", "white"),
+                RobotState.MOVING:
+                    ("ДВИЖЕНИЕ", "#2196F3", "white"),
+                RobotState.PAUSED:
+                    ("ПАУЗА", "yellow", "black"),
+                RobotState.EMERGENCY:
+                    ("⛔ СТОП", "red", "white"),
+                RobotState.ERROR:
+                    ("ОШИБКА", "#ff5722", "white"),
             }
-            text, bg, fg = status_map.get(state, ("?", "gray", "white"))
-            self.status_label.setText(text)
+            txt, bg, fg = sm.get(state, ("?", "gray", "white"))
+            self.status_label.setText(txt)
             self.status_label.setStyleSheet(
                 f"background-color: {bg}; color: {fg}; "
-                f"font-size: 22px; font-weight: bold; padding: 15px;")
+                f"font-size: 22px; font-weight: bold; "
+                f"padding: 15px;")
 
             logs = "\n".join(logger.get_logs())
             self.log_view.setText(logs)
             sb = self.log_view.verticalScrollBar()
             sb.setValue(sb.maximum())
         except Exception as e:
-            logger.add(f"Ошибка обновления: {e}")
+            logger.add(f"Ошибка: {e}")
 
     def save_logs(self):
         logger.set_save_path(self.path_edit.text())
         if logger.save_to_file():
-            QMessageBox.information(self, "OK", "Логи сохранены!")
+            QMessageBox.information(
+                self, "OK", "Логи сохранены!")
         else:
-            QMessageBox.critical(self, "Ошибка", "Не удалось сохранить")
+            QMessageBox.critical(
+                self, "Ошибка", "Не удалось сохранить")
 
     def closeEvent(self, event):
         self._stop_sim_render()
@@ -1237,8 +1508,6 @@ class RobotControlGUI(QMainWindow):
         super().closeEvent(event)
 
 
-# ═══════════════════════════════════════════════════════════════
-#  Точка входа
 # ═══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     app = QApplication(sys.argv)
