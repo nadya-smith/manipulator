@@ -442,12 +442,29 @@ class RobotControlGUI(QMainWindow):
         # ── Схват ─────────────────────────────
         grip_group = QGroupBox("Схват")
         grip_layout = QHBoxLayout()
+
         btn_open  = QPushButton("Открыть")
         btn_close = QPushButton("Закрыть")
-        btn_open.clicked.connect(lambda: self._safe_call(lambda: self.robot.set_gripper(1.0)))
-        btn_close.clicked.connect(lambda: self._safe_call(lambda: self.robot.set_gripper(0.0)))
+
+        btn_open.clicked.connect(lambda: self._gripper_command("open"))
+        btn_close.clicked.connect(lambda: self._gripper_command("close"))
+
+        # Слайдер для плавного управления
+        self.gripper_slider = QSlider(Qt.Horizontal)
+        self.gripper_slider.setRange(0, 100)
+        self.gripper_slider.setValue(0)
+        self.gripper_slider.setToolTip("0 = открыт, 100 = закрыт")
+        self.gripper_slider.valueChanged.connect(self._on_gripper_slider)
+
+        self.gripper_label = QLabel("0%")
+        self.gripper_label.setFixedWidth(35)
+        self.gripper_label.setAlignment(Qt.AlignCenter)
+
         grip_layout.addWidget(btn_open)
+        grip_layout.addWidget(self.gripper_slider)
+        grip_layout.addWidget(self.gripper_label)
         grip_layout.addWidget(btn_close)
+
         grip_group.setLayout(grip_layout)
         left_panel.addWidget(grip_group)
 
@@ -996,6 +1013,7 @@ class RobotControlGUI(QMainWindow):
         return delta * scale * direction
 
     def _apply_sensor_to_joint(self):
+        """Применение данных AS5600 к суставу."""
         if not self.robot or not self.robot.is_connected:
             return
         if not self.chk_sensor_enable.isChecked():
@@ -1013,6 +1031,10 @@ class RobotControlGUI(QMainWindow):
                 min_d = jcfg.get("min_deg", -360)
                 max_d = jcfg.get("max_deg",  360)
                 delta_deg = max(min_d, min(max_d, delta_deg))
+
+                # ── gui_invert: сенсор тоже должен учитывать ──
+                if jcfg.get("gui_invert", False):
+                    delta_deg = -delta_deg
 
             target_rad = math.radians(delta_deg)
             joints = list(self.robot.get_joint_positions())
@@ -1037,21 +1059,104 @@ class RobotControlGUI(QMainWindow):
         self._safe_call(lambda: self.robot.move_to_home())
 
     def move_axis(self, axis: int, direction: int):
+        """
+        Перемещение одного сустава/оси на один шаг.
+        
+        axis:      индекс оси (0–5)
+        direction: +1 или −1 (от кнопок + / −)
+        """
         if not self.robot or not self.robot.is_connected:
             return
-        step = self.step_spin.value() / 100.0
+
+        step = self.step_spin.value() / 100.0  # рад для MoveJ, м для MoveL
+
         try:
             if self.move_mode_combo.currentText().startswith("MoveJ"):
                 joints = list(self.robot.get_joint_positions())
-                joints[axis] += direction * step
+
+                # ── Учитываем gui_invert из конфига ──
+                joints_cfg = cfg.get("joints", [])
+                effective_dir = direction
+                if axis < len(joints_cfg):
+                    if joints_cfg[axis].get("gui_invert", False):
+                        effective_dir = -direction
+
+                joints[axis] += effective_dir * step
+
+                # ── Ограничение по лимитам (рад) ──
+                if axis < len(joints_cfg):
+                    min_rad = math.radians(joints_cfg[axis].get("min_deg", -360))
+                    max_rad = math.radians(joints_cfg[axis].get("max_deg",  360))
+                    joints[axis] = max(min_rad, min(max_rad, joints[axis]))
+
                 self.robot.move_j(joints, blocking=False)
             else:
                 pose = list(self.robot.get_cartesian_pose())
                 pose[axis] += direction * step
                 self.robot.move_l(pose, blocking=False)
         except Exception as e:
-            logger.add(f"Ошибка: {e}")
+            logger.add(f"Ошибка движения: {e}")
 
+    # ══════════════════════════════════════════════════════════
+    #  Управление схватом
+    # ══════════════════════════════════════════════════════════
+
+    def _gripper_command(self, action: str):
+        """
+        Открыть / закрыть схват с учётом gui_invert.
+        
+        Конвенция в mujoco_robot.py:
+          set_gripper(0.0) → open_rad  (раскрыт)
+          set_gripper(1.0) → close_rad (сжат)
+        """
+        if not self.robot or not self.robot.is_connected:
+            logger.add("Робот не подключён!")
+            return
+
+        invert = cfg.get("gripper.gui_invert", False)
+
+        if action == "open":
+            value = 1.0 if invert else 0.0
+        else:  # close
+            value = 0.0 if invert else 1.0
+
+        try:
+            self.robot.set_gripper(value)
+            # Обновляем слайдер
+            slider_pos = int((1.0 - value) * 100) if invert else int(value * 100)
+            self.gripper_slider.blockSignals(True)
+            self.gripper_slider.setValue(slider_pos)
+            self.gripper_slider.blockSignals(False)
+            self.gripper_label.setText(f"{slider_pos}%")
+            logger.add(f"[Схват] {action.upper()} → ctrl={value:.2f}")
+        except Exception as e:
+            logger.add(f"[Схват] Ошибка: {e}")
+
+    def _on_gripper_slider(self, slider_value: int):
+        """
+        Слайдер: 0 = открыт, 100 = закрыт (с точки зрения GUI).
+        Внутренне конвертируется с учётом gui_invert.
+        """
+        if not self.robot or not self.robot.is_connected:
+            return
+
+        invert = cfg.get("gripper.gui_invert", False)
+
+        # slider 0→100 = GUI "открыт→закрыт"
+        # set_gripper(0.0) = физически открыт, set_gripper(1.0) = физически закрыт
+        fraction = slider_value / 100.0
+
+        if invert:
+            value = 1.0 - fraction
+        else:
+            value = fraction
+
+        try:
+            self.robot.set_gripper(value)
+            self.gripper_label.setText(f"{slider_value}%")
+        except Exception as e:
+            logger.add(f"[Схват] Ошибка: {e}")
+            
     # ══════════════════════════════════════════════════════════
     #  Таймер обновления
     # ══════════════════════════════════════════════════════════
@@ -1061,20 +1166,32 @@ class RobotControlGUI(QMainWindow):
         self.timer.start(cfg.get("application.update_interval_ms", 200))
 
     def update_info(self):
+        """Периодическое обновление GUI (по таймеру)."""
         if not self.robot or not self.robot.is_connected:
             return
         try:
             cart = self.robot.get_cartesian_pose()
             for i, val in enumerate(cart):
                 self.pos_labels[i].setText(f"{val:+.3f}")
+
             is_joint = self.move_mode_combo.currentText().startswith("MoveJ")
+            joints_cfg = cfg.get("joints", [])
+
             if is_joint:
                 joints = self.robot.get_joint_positions()
                 for i, val in enumerate(joints):
-                    self.joy_val_labels[i].setText(f"{np.rad2deg(val):.1f}°")
+                    deg = np.rad2deg(val)
+
+                    # ── Отображаем угол с учётом gui_invert ──
+                    # Чтобы пользователь видел: + = рука вверх / от стола
+                    if i < len(joints_cfg) and joints_cfg[i].get("gui_invert", False):
+                        deg = -deg
+
+                    self.joy_val_labels[i].setText(f"{deg:.1f}°")
             else:
                 for i, val in enumerate(cart):
                     self.joy_val_labels[i].setText(f"{val:.3f}")
+
             if self.torque_group.isVisible():
                 torques = self.robot.get_joint_torques()
                 for i, val in enumerate(torques):

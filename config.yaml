@@ -86,10 +86,11 @@ mujoco:
 joints:
   - name: "J1"
     label: "Base Pitch"
-    mujoco_name: "J1_base_pitch"                                    # ← ИСПРАВЛЕНО
-    mujoco_actuator: "motor_J1"                                     # ← ДОБАВЛЕНО
-    min_deg: -80                                                    # ← ИСПРАВЛЕНО
+    mujoco_name: "J1_base_pitch"
+    mujoco_actuator: "motor_J1"
+    min_deg: -80
     max_deg:  80
+    gui_invert: false
     encoder:
       scale: 1.0
       offset_deg: 0.0
@@ -97,10 +98,11 @@ joints:
 
   - name: "J2"
     label: "Shoulder Pitch"
-    mujoco_name: "J2_shoulder_pitch"                                # ← ИСПРАВЛЕНО
-    mujoco_actuator: "motor_J2_pitch"                               # ← ДОБАВЛЕНО
-    min_deg: -41.5                                                  # ← ИСПРАВЛЕНО
+    mujoco_name: "J2_shoulder_pitch"
+    mujoco_actuator: "motor_J2_pitch"
+    min_deg: -41.5
     max_deg:  41.5
+    gui_invert: true                          # ← + кнопка = рука ОТ стола
     encoder:
       scale: 1.0
       offset_deg: 0.0
@@ -108,10 +110,11 @@ joints:
 
   - name: "J3"
     label: "Shoulder Roll"
-    mujoco_name: "J2_shoulder_roll"                                 # ← ИСПРАВЛЕНО
-    mujoco_actuator: "motor_J2_roll"                                # ← ДОБАВЛЕНО
-    min_deg: -86.5                                                  # ← ИСПРАВЛЕНО
+    mujoco_name: "J2_shoulder_roll"
+    mujoco_actuator: "motor_J2_roll"
+    min_deg: -86.5
     max_deg:  86.5
+    gui_invert: false
     encoder:
       scale: 1.0
       offset_deg: 0.0
@@ -119,10 +122,11 @@ joints:
 
   - name: "J4"
     label: "Elbow Pitch"
-    mujoco_name: "J3_elbow_pitch"                                   # ← ИСПРАВЛЕНО
-    mujoco_actuator: "motor_J3_pitch"                               # ← ДОБАВЛЕНО
-    min_deg: -40                                                    # ← ИСПРАВЛЕНО
+    mujoco_name: "J3_elbow_pitch"
+    mujoco_actuator: "motor_J3_pitch"
+    min_deg: -40
     max_deg:  40
+    gui_invert: true                          # ← аналогично
     encoder:
       scale: 1.0
       offset_deg: 0.0
@@ -130,10 +134,11 @@ joints:
 
   - name: "J5"
     label: "Forearm Roll"
-    mujoco_name: "J3_forearm_roll"                                  # ← ИСПРАВЛЕНО
-    mujoco_actuator: "motor_J3_roll"                                # ← ДОБАВЛЕНО
-    min_deg: -86                                                    # ← ИСПРАВЛЕНО
+    mujoco_name: "J3_forearm_roll"
+    mujoco_actuator: "motor_J3_roll"
+    min_deg: -86
     max_deg:  86
+    gui_invert: false
     encoder:
       scale: 1.0
       offset_deg: 0.0
@@ -141,28 +146,29 @@ joints:
 
   - name: "J6"
     label: "Wrist Pitch"
-    mujoco_name: "J4_wrist_pitch"                                   # ← ИСПРАВЛЕНО
-    mujoco_actuator: "motor_J4_wrist"                               # ← ДОБАВЛЕНО
-    min_deg: -25.75                                                 # ← ИСПРАВЛЕНО
+    mujoco_name: "J4_wrist_pitch"
+    mujoco_actuator: "motor_J4_wrist"
+    min_deg: -25.75
     max_deg:  25.75
+    gui_invert: true                          # ← аналогично
     encoder:
       scale: 1.0
       offset_deg: 0.0
       invert: false
 
-
 # ─── Схват (НОВАЯ секция) ────────────────────────────────────
 #  Описывает привод схвата (J5_grip — hinge, 4 пальца)
 #   • value 0.0 → open_rad  (пальцы раскрыты)
 #   • value 1.0 → close_rad (пальцы сжаты)
-gripper:                                                            # ← ДОБАВЛЕНО
+gripper:
   mujoco_joint: "J5_grip"
   mujoco_actuator: "motor_J5_grip"
   type: "hinge"
-  # Значения data.ctrl (рад) для полного открытия / закрытия
   open_rad:  0.0
   close_rad: 1.300
-
+  # true → кнопка «Открыть» отправит close_rad, «Закрыть» → open_rad
+  # (если физически пальцы двигаются не в ту сторону)
+  gui_invert: false
 
 # ─── Датчик AS5600 ───────────────────────────────────────────
 sensor:

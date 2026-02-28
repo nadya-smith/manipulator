@@ -84,6 +84,7 @@ DEFAULT_CONFIG = {
             "mujoco_name": "J1_base_pitch",
             "mujoco_actuator": "motor_J1",
             "min_deg": -80, "max_deg": 80,
+            "gui_invert": True,
             "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False},
         },
         {
@@ -91,6 +92,7 @@ DEFAULT_CONFIG = {
             "mujoco_name": "J2_shoulder_pitch",
             "mujoco_actuator": "motor_J2_pitch",
             "min_deg": -41.5, "max_deg": 41.5,
+            "gui_invert": True,                    # ← + = ОТ стола
             "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False},
         },
         {
@@ -98,6 +100,7 @@ DEFAULT_CONFIG = {
             "mujoco_name": "J2_shoulder_roll",
             "mujoco_actuator": "motor_J2_roll",
             "min_deg": -86.5, "max_deg": 86.5,
+            "gui_invert": False,
             "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False},
         },
         {
@@ -105,6 +108,7 @@ DEFAULT_CONFIG = {
             "mujoco_name": "J3_elbow_pitch",
             "mujoco_actuator": "motor_J3_pitch",
             "min_deg": -40, "max_deg": 40,
+            "gui_invert": True,                    # ← аналогично плечу
             "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False},
         },
         {
@@ -112,6 +116,7 @@ DEFAULT_CONFIG = {
             "mujoco_name": "J3_forearm_roll",
             "mujoco_actuator": "motor_J3_roll",
             "min_deg": -86, "max_deg": 86,
+            "gui_invert": False,
             "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False},
         },
         {
@@ -119,6 +124,7 @@ DEFAULT_CONFIG = {
             "mujoco_name": "J4_wrist_pitch",
             "mujoco_actuator": "motor_J4_wrist",
             "min_deg": -25.75, "max_deg": 25.75,
+            "gui_invert": True,                    # ← аналогично
             "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False},
         },
     ],
@@ -130,6 +136,7 @@ DEFAULT_CONFIG = {
         "type":            "hinge",       # hinge (рад) / slide (м)
         "open_rad":         0.0,          # data.ctrl при открытом схвате
         "close_rad":        1.300,        # data.ctrl при закрытом схвате
+        "gui_invert":       True,
     },
 
     # ── Датчик AS5600 ── (без изменений)
