@@ -1,0 +1,340 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Rooky Arm — 7-DOF (6 суставов + 1 схват) для Robot Control.
+
+  Механика: БЕЗ ИЗМЕНЕНИЙ (оригинал пользователя).
+  Добавлено: tcp-сайт, камеры, объекты сцены, сенсоры.
+
+  Именование (для mujoco_robot.py):
+    Суставы:   J1_base_pitch … J4_wrist_pitch, J5_grip
+    Актуаторы: motor_J1 … motor_J4_wrist, motor_J5_grip
+    Сенсоры:   sens_pos_1…6, sens_vel_1…6, sens_frc_1…6,
+               tcp_pos, tcp_quat
+    Сайт TCP:  tcp
+    Камеры:    overview_cam, work_cam
+-->
+<mujoco model="rooky_arm_full">
+  <compiler angle="degree"/>
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+
+  <visual>
+    <headlight ambient="0.3 0.3 0.3"/>
+  </visual>
+
+  <default>
+    <geom contype="1" conaffinity="1"/>
+    <joint damping="2" armature="0.01"/>
+  </default>
+
+  <worldbody>
+    <light pos="0.5 -0.5 2.0" dir="-0.2 0.2 -1"
+           diffuse="0.8 0.8 0.8" specular="0.3 0.3 0.3"/>
+    <light pos="-0.5 0.5 1.5" dir="0.2 -0.2 -1"
+           diffuse="0.4 0.4 0.4"/>
+
+    <!-- ======== ПОЛ ======== -->
+    <geom name="floor" type="plane" size="3 3 0.01"
+          rgba="0.35 0.35 0.35 1"/>
+
+    <!-- ======== СТОЛ ======== -->
+    <geom name="table_top" type="box" size="0.40 0.30 0.02"
+          pos="0 0 0.90" rgba="0.55 0.36 0.18 1"/>
+    <geom name="leg_FL" type="cylinder" size="0.02 0.44"
+          pos=" 0.35 -0.25 0.44" rgba="0.45 0.28 0.14 1"/>
+    <geom name="leg_FR" type="cylinder" size="0.02 0.44"
+          pos="-0.35 -0.25 0.44" rgba="0.45 0.28 0.14 1"/>
+    <geom name="leg_BL" type="cylinder" size="0.02 0.44"
+          pos=" 0.35  0.25 0.44" rgba="0.45 0.28 0.14 1"/>
+    <geom name="leg_BR" type="cylinder" size="0.02 0.44"
+          pos="-0.35  0.25 0.44" rgba="0.45 0.28 0.14 1"/>
+
+    <!-- ======== КРАСНЫЙ БОКС (основание) ======== -->
+    <body name="base_mount" pos="0 -0.25 0.97">
+      <geom name="base_box" type="box" size="0.05 0.05 0.05"
+            rgba="0.90 0.10 0.10 1" mass="2"/>
+
+      <geom name="bracket" type="capsule" size="0.018"
+            fromto="0 0 0   0 -0.05 0"
+            rgba="0.35 0.35 0.35 1" mass="0.1"
+            contype="0" conaffinity="0"/>
+
+      <!-- ======== СУСТАВ 1 — База, Pitch ======== -->
+      <body name="link1" pos="0 -0.05 0">
+        <inertial pos="0 0 -0.015" mass="0.5"
+                  diaginertia="0.001 0.001 0.0004"/>
+
+        <joint name="J1_base_pitch" type="hinge"
+               axis="0 1 0" range="-80 80" damping="3"/>
+
+        <geom name="J1_hinge_viz" type="cylinder"
+              pos="0 -0.035 0"
+              size="0.04 0.035" euler="90 0 0"
+              rgba="1.0 0.50 0.05 1"
+              contype="0" conaffinity="0"/>
+
+        <geom name="link1_arm" type="capsule" size="0.022"
+              fromto="0 -0.035 -0.01  0 -0.035 -0.04"
+              rgba="1.0 0.55 0.10 0.95"/>
+
+        <!-- ======== СУСТАВ 2A — Плечо, Pitch ======== -->
+        <body name="shoulder_pitch" pos="0 -0.035 -0.04">
+          <inertial pos="0 0 -0.02" mass="0.3"
+                    diaginertia="0.0005 0.0005 0.0003"/>
+
+          <joint name="J2_shoulder_pitch" type="hinge"
+                 axis="1 0 0" range="-41.5 41.5" damping="3"/>
+
+          <geom name="J2a_hinge_viz" type="cylinder"
+                size="0.035 0.030" euler="0 90 0"
+                rgba="1.0 0.50 0.05 1"
+                contype="0" conaffinity="0"/>
+
+          <geom name="shoulder_bridge" type="capsule" size="0.020"
+                fromto="0 0 -0.01  0 0 -0.06"
+                rgba="1.0 0.55 0.10 0.95"/>
+
+          <!-- ======== СУСТАВ 2Б — Плечо, Roll ======== -->
+          <body name="shoulder_roll" pos="0 0 -0.06">
+            <inertial pos="0 0 -0.10" mass="0.5"
+                      diaginertia="0.003 0.003 0.0004"/>
+
+            <joint name="J2_shoulder_roll" type="hinge"
+                   axis="0 0 1" range="-86.5 86.5" damping="2"/>
+
+            <geom name="J2b_roll_viz" type="cylinder"
+                  size="0.032 0.025"
+                  rgba="1.0 0.45 0.02 1"
+                  contype="0" conaffinity="0"/>
+
+            <geom name="link2_arm" type="capsule" size="0.022"
+                  fromto="0 0 -0.01  0 0 -0.256"
+                  rgba="1.0 0.55 0.10 0.95"/>
+
+            <!-- ======== СУСТАВ 3A — Локоть, Pitch ======== -->
+            <body name="elbow_pitch" pos="0 0 -0.256">
+              <inertial pos="0 0 -0.02" mass="0.3"
+                        diaginertia="0.0005 0.0005 0.0003"/>
+
+              <joint name="J3_elbow_pitch" type="hinge"
+                     axis="1 0 0" range="-40 40" damping="3"/>
+
+              <geom name="J3a_hinge_viz" type="cylinder"
+                    size="0.035 0.030" euler="0 90 0"
+                    rgba="1.0 0.85 0.0 1"
+                    contype="0" conaffinity="0"/>
+
+              <geom name="elbow_bridge" type="capsule" size="0.020"
+                    fromto="0 0 -0.01  0 0 -0.06"
+                    rgba="1.0 0.90 0.15 0.95"/>
+
+              <!-- ======== СУСТАВ 3Б — Предплечье, Roll ======== -->
+              <body name="forearm_roll" pos="0 0 -0.06">
+                <inertial pos="0 0 -0.10" mass="0.4"
+                          diaginertia="0.003 0.003 0.0004"/>
+
+                <joint name="J3_forearm_roll" type="hinge"
+                       axis="0 0 1" range="-86 86" damping="2"/>
+
+                <geom name="J3b_roll_viz" type="cylinder"
+                      size="0.032 0.025"
+                      rgba="1.0 0.80 0.0 1"
+                      contype="0" conaffinity="0"/>
+
+                <geom name="link3_arm" type="capsule" size="0.022"
+                      fromto="0 0 -0.01  0 0 -0.249"
+                      rgba="1.0 0.90 0.15 0.95"/>
+
+                <!-- ======== СУСТАВ 4 — Запястье, Pitch ======== -->
+                <body name="wrist_pitch" pos="0 0 -0.249">
+                  <inertial pos="0 0 -0.045" mass="0.2"
+                            diaginertia="0.0002 0.0002 0.0001"/>
+
+                  <joint name="J4_wrist_pitch" type="hinge"
+                         axis="1 0 0" range="-25.75 25.75" damping="2"/>
+
+                  <geom name="J4_hinge_viz" type="cylinder"
+                        size="0.030 0.025" euler="0 90 0"
+                        rgba="0.95 0.95 0.95 1"
+                        contype="0" conaffinity="0"/>
+
+                  <geom name="link4_arm" type="capsule" size="0.018"
+                        fromto="0 0 -0.01  0 0 -0.089"
+                        rgba="0.95 0.95 0.95 0.95"/>
+
+                  <!-- ======== СУСТАВ 5 — Схват ======== -->
+                  <body name="gripper_base" pos="0 0 -0.089">
+                    <inertial pos="0 0 -0.02" mass="0.15"
+                              diaginertia="0.0001 0.0001 0.00005"/>
+
+                    <!-- Ладонь -->
+                    <geom name="palm" type="box"
+                          size="0.035 0.025 0.012"
+                          rgba="0.12 0.12 0.12 1"/>
+
+                    <!-- ★ TCP — точка инструмента (ДОБАВЛЕНО) ★ -->
+                    <site name="tcp" pos="0 -0.005 -0.06"
+                          size="0.008" rgba="1 0 0 1"/>
+
+                    <!-- ====== БОЛЬШОЙ ПАЛЕЦ (неподвижный) ====== -->
+                    <geom name="thumb" type="capsule" size="0.008"
+                          fromto="0 0.025 -0.012   0 0.025 -0.097"
+                          rgba="0.12 0.12 0.12 1"/>
+                    <geom name="thumb_tip" type="sphere" size="0.010"
+                          pos="0 0.025 -0.097"
+                          rgba="0.12 0.12 0.12 1"/>
+
+                    <!-- ====== 4 ПАЛЬЦА (подвижные) ====== -->
+                    <body name="fingers" pos="0 -0.035 -0.012">
+                      <inertial pos="0 0 -0.04" mass="0.1"
+                                diaginertia="0.00008 0.00008 0.00002"/>
+
+                      <joint name="J5_grip" type="hinge"
+                             axis="1 0 0" range="-74.5 74.5" damping="1"/>
+
+                      <geom name="finger_1" type="capsule" size="0.006"
+                            fromto="-0.021 0 0   -0.021 0 -0.085"
+                            rgba="0.12 0.12 0.12 1"/>
+                      <geom name="finger_1_tip" type="sphere" size="0.008"
+                            pos="-0.021 0 -0.085"
+                            rgba="0.12 0.12 0.12 1"/>
+
+                      <geom name="finger_2" type="capsule" size="0.006"
+                            fromto="-0.007 0 0   -0.007 0 -0.085"
+                            rgba="0.12 0.12 0.12 1"/>
+                      <geom name="finger_2_tip" type="sphere" size="0.008"
+                            pos="-0.007 0 -0.085"
+                            rgba="0.12 0.12 0.12 1"/>
+
+                      <geom name="finger_3" type="capsule" size="0.006"
+                            fromto="0.007 0 0   0.007 0 -0.085"
+                            rgba="0.12 0.12 0.12 1"/>
+                      <geom name="finger_3_tip" type="sphere" size="0.008"
+                            pos="0.007 0 -0.085"
+                            rgba="0.12 0.12 0.12 1"/>
+
+                      <geom name="finger_4" type="capsule" size="0.006"
+                            fromto="0.021 0 0   0.021 0 -0.085"
+                            rgba="0.12 0.12 0.12 1"/>
+                      <geom name="finger_4_tip" type="sphere" size="0.008"
+                            pos="0.021 0 -0.085"
+                            rgba="0.12 0.12 0.12 1"/>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+
+    <!-- ★★★ ОБЪЕКТЫ СЦЕНЫ (ДОБАВЛЕНО) ★★★ -->
+    <!-- Все объекты стоят на столешнице (верхняя грань z = 0.92) -->
+
+    <body name="red_cube" pos="0.20 0.10 0.945">
+      <freejoint/>
+      <geom name="red_cube_geom" type="box"
+            size="0.025 0.025 0.025" mass="0.1"
+            rgba="1 0 0 1"/>
+    </body>
+
+    <body name="green_cylinder" pos="-0.15 0.12 0.945">
+      <freejoint/>
+      <geom name="green_cyl_geom" type="cylinder"
+            size="0.02 0.025" mass="0.08"
+            rgba="0 0.8 0 1"/>
+    </body>
+
+    <body name="blue_sphere" pos="0.10 -0.05 0.95">
+      <freejoint/>
+      <geom name="blue_sph_geom" type="sphere"
+            size="0.03" mass="0.05"
+            rgba="0 0 1 1"/>
+    </body>
+
+    <body name="yellow_cube" pos="-0.10 -0.10 0.935">
+      <freejoint/>
+      <geom name="yellow_cube_geom" type="box"
+            size="0.015 0.015 0.015" mass="0.06"
+            rgba="1 1 0 1"/>
+    </body>
+
+    <!-- ★★★ КАМЕРЫ (ДОБАВЛЕНО) ★★★ -->
+
+    <!-- Обзорная: вид сбоку-сверху на всю сцену -->
+    <camera name="overview_cam"
+            pos="1.5 -1.5 1.8"
+            xyaxes="0.63 0.78 0 -0.35 0.28 0.89"
+            fovy="50"/>
+
+    <!-- Рабочая: имитация камеры над столом (вид сверху) -->
+    <camera name="work_cam"
+            pos="0 -0.35 2.0"
+            xyaxes="1 0 0 0 1 0"
+            fovy="60"/>
+
+  </worldbody>
+
+  <!-- ======== ПРИВОДЫ ======== -->
+  <!--
+    ВАЖНО: compiler angle="degree" → ctrlrange тоже в ГРАДУСАХ
+    (MuJoCo >= 2.3 конвертирует автоматически).
+    Значения data.ctrl в рантайме — всегда в РАДИАНАХ.
+  -->
+  <actuator>
+    <position name="motor_J1" joint="J1_base_pitch"
+              kp="50" ctrlrange="-80 80" ctrllimited="true"/>
+
+    <position name="motor_J2_pitch" joint="J2_shoulder_pitch"
+              kp="80" ctrlrange="-41.5 41.5" ctrllimited="true"/>
+
+    <position name="motor_J2_roll" joint="J2_shoulder_roll"
+              kp="40" ctrlrange="-86.5 86.5" ctrllimited="true"/>
+
+    <position name="motor_J3_pitch" joint="J3_elbow_pitch"
+              kp="60" ctrlrange="-40 40" ctrllimited="true"/>
+
+    <position name="motor_J3_roll" joint="J3_forearm_roll"
+              kp="30" ctrlrange="-86 86" ctrllimited="true"/>
+
+    <position name="motor_J4_wrist" joint="J4_wrist_pitch"
+              kp="20" ctrlrange="-25.75 25.75" ctrllimited="true"/>
+
+    <position name="motor_J5_grip" joint="J5_grip"
+              kp="15" ctrlrange="-74.5 74.5" ctrllimited="true"/>
+  </actuator>
+
+  <!-- ★★★ СЕНСОРЫ (ДОБАВЛЕНО) ★★★ -->
+  <!--
+    Конвенция именования (используется в mujoco_robot.py):
+      sens_pos_{1..6}  — положения 6 суставов руки
+      sens_vel_{1..6}  — скорости
+      sens_frc_{1..6}  — усилия актуаторов
+      tcp_pos, tcp_quat — поза TCP
+  -->
+  <sensor>
+    <jointpos name="sens_pos_1" joint="J1_base_pitch"/>
+    <jointpos name="sens_pos_2" joint="J2_shoulder_pitch"/>
+    <jointpos name="sens_pos_3" joint="J2_shoulder_roll"/>
+    <jointpos name="sens_pos_4" joint="J3_elbow_pitch"/>
+    <jointpos name="sens_pos_5" joint="J3_forearm_roll"/>
+    <jointpos name="sens_pos_6" joint="J4_wrist_pitch"/>
+
+    <jointvel name="sens_vel_1" joint="J1_base_pitch"/>
+    <jointvel name="sens_vel_2" joint="J2_shoulder_pitch"/>
+    <jointvel name="sens_vel_3" joint="J2_shoulder_roll"/>
+    <jointvel name="sens_vel_4" joint="J3_elbow_pitch"/>
+    <jointvel name="sens_vel_5" joint="J3_forearm_roll"/>
+    <jointvel name="sens_vel_6" joint="J4_wrist_pitch"/>
+
+    <actuatorfrc name="sens_frc_1" actuator="motor_J1"/>
+    <actuatorfrc name="sens_frc_2" actuator="motor_J2_pitch"/>
+    <actuatorfrc name="sens_frc_3" actuator="motor_J2_roll"/>
+    <actuatorfrc name="sens_frc_4" actuator="motor_J3_pitch"/>
+    <actuatorfrc name="sens_frc_5" actuator="motor_J3_roll"/>
+    <actuatorfrc name="sens_frc_6" actuator="motor_J4_wrist"/>
+
+    <framepos  name="tcp_pos"  objtype="site" objname="tcp"/>
+    <framequat name="tcp_quat" objtype="site" objname="tcp"/>
+  </sensor>
+</mujoco>

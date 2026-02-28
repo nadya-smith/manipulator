@@ -1,0 +1,253 @@
+# ═══════════════════════════════════════════════════════════════
+#  Robot Control — Конфигурационный файл
+# ═══════════════════════════════════════════════════════════════
+#  Все параметры имеют значения по умолчанию.
+#  Можно удалить любую секцию — будут использованы значения
+#  из DEFAULT_CONFIG в config.py.
+# ═══════════════════════════════════════════════════════════════
+
+
+# ─── Приложение ───────────────────────────────────────────────
+application:
+  window_title: "Управление роботом — Реальный / MuJoCo + AS5600"
+  window_x: 100
+  window_y: 100
+  window_width: 1550
+  window_height: 1050
+  # Интервал обновления GUI (мс). Меньше → плавнее, но выше нагрузка.
+  update_interval_ms: 200
+
+
+# ─── Логирование ──────────────────────────────────────────────
+logging:
+  file: "robot_logs.txt"
+  max_entries: 1000
+
+
+# ─── Подключение робота ──────────────────────────────────────
+robot:
+  # Режим при старте: "real" или "simulation"
+  default_mode: "simulation"
+
+  # Настройки реального робота (MCX)
+  real:
+    port: "COM39"
+    baudrate: 115200
+
+  # Настройки симуляции
+  simulation:
+    # Путь к XML-модели MuJoCo (относительно рабочей директории)
+    xml_path: "mujoco/rooky_arm.xml"                               # ← ИСПРАВЛЕНО
+
+  # Параметры движения
+  movement:
+    # Шаг по умолчанию (1–50, делится на 100 внутри)
+    default_step: 5
+    # Режим по умолчанию: "MoveJ" или "MoveL"
+    default_mode: "MoveJ"
+
+  # Домашняя позиция (градусы для каждого сустава)
+  home_position_deg: [0, 0, 0, 0, 0, 0]
+
+
+# ─── MuJoCo ──────────────────────────────────────────────────
+mujoco:
+  rendering:
+    # Частота кадров 3D-визуализации
+    fps: 25
+    width: 640
+    height: 480
+
+  # Имена камер в MuJoCo-модели
+  cameras:
+    overview: "overview_cam"
+    work: "work_cam"                                                # ← ИСПРАВЛЕНО (было hand_cam)
+
+  # Шаг симуляции (сек)
+  timestep: 0.002
+
+
+# ─── Суставы робота ──────────────────────────────────────────
+#  Каждый элемент описывает один сустав:
+#   • name            — отображаемое имя в GUI
+#   • label           — описание сустава
+#   • mujoco_name     — имя joint в XML-модели MuJoCo
+#   • mujoco_actuator — имя position-актуатора в XML
+#   • min_deg/max_deg — допустимый диапазон (градусы, из XML)
+#   • encoder         — калибровка энкодера AS5600
+#
+#  Соответствие XML → конфиг (rooky_arm.xml):
+#    J1_base_pitch     → motor_J1         ± 80°
+#    J2_shoulder_pitch → motor_J2_pitch   ± 41.5°
+#    J2_shoulder_roll  → motor_J2_roll    ± 86.5°
+#    J3_elbow_pitch    → motor_J3_pitch   ± 40°
+#    J3_forearm_roll   → motor_J3_roll    ± 86°
+#    J4_wrist_pitch    → motor_J4_wrist   ± 25.75°
+joints:
+  - name: "J1"
+    label: "Base Pitch"
+    mujoco_name: "J1_base_pitch"                                    # ← ИСПРАВЛЕНО
+    mujoco_actuator: "motor_J1"                                     # ← ДОБАВЛЕНО
+    min_deg: -80                                                    # ← ИСПРАВЛЕНО
+    max_deg:  80
+    encoder:
+      scale: 1.0
+      offset_deg: 0.0
+      invert: false
+
+  - name: "J2"
+    label: "Shoulder Pitch"
+    mujoco_name: "J2_shoulder_pitch"                                # ← ИСПРАВЛЕНО
+    mujoco_actuator: "motor_J2_pitch"                               # ← ДОБАВЛЕНО
+    min_deg: -41.5                                                  # ← ИСПРАВЛЕНО
+    max_deg:  41.5
+    encoder:
+      scale: 1.0
+      offset_deg: 0.0
+      invert: false
+
+  - name: "J3"
+    label: "Shoulder Roll"
+    mujoco_name: "J2_shoulder_roll"                                 # ← ИСПРАВЛЕНО
+    mujoco_actuator: "motor_J2_roll"                                # ← ДОБАВЛЕНО
+    min_deg: -86.5                                                  # ← ИСПРАВЛЕНО
+    max_deg:  86.5
+    encoder:
+      scale: 1.0
+      offset_deg: 0.0
+      invert: false
+
+  - name: "J4"
+    label: "Elbow Pitch"
+    mujoco_name: "J3_elbow_pitch"                                   # ← ИСПРАВЛЕНО
+    mujoco_actuator: "motor_J3_pitch"                               # ← ДОБАВЛЕНО
+    min_deg: -40                                                    # ← ИСПРАВЛЕНО
+    max_deg:  40
+    encoder:
+      scale: 1.0
+      offset_deg: 0.0
+      invert: false
+
+  - name: "J5"
+    label: "Forearm Roll"
+    mujoco_name: "J3_forearm_roll"                                  # ← ИСПРАВЛЕНО
+    mujoco_actuator: "motor_J3_roll"                                # ← ДОБАВЛЕНО
+    min_deg: -86                                                    # ← ИСПРАВЛЕНО
+    max_deg:  86
+    encoder:
+      scale: 1.0
+      offset_deg: 0.0
+      invert: false
+
+  - name: "J6"
+    label: "Wrist Pitch"
+    mujoco_name: "J4_wrist_pitch"                                   # ← ИСПРАВЛЕНО
+    mujoco_actuator: "motor_J4_wrist"                               # ← ДОБАВЛЕНО
+    min_deg: -25.75                                                 # ← ИСПРАВЛЕНО
+    max_deg:  25.75
+    encoder:
+      scale: 1.0
+      offset_deg: 0.0
+      invert: false
+
+
+# ─── Схват (НОВАЯ секция) ────────────────────────────────────
+#  Описывает привод схвата (J5_grip — hinge, 4 пальца)
+#   • value 0.0 → open_rad  (пальцы раскрыты)
+#   • value 1.0 → close_rad (пальцы сжаты)
+gripper:                                                            # ← ДОБАВЛЕНО
+  mujoco_joint: "J5_grip"
+  mujoco_actuator: "motor_J5_grip"
+  type: "hinge"
+  # Значения data.ctrl (рад) для полного открытия / закрытия
+  open_rad:  0.0
+  close_rad: 1.300
+
+
+# ─── Датчик AS5600 ───────────────────────────────────────────
+sensor:
+  # COM-порт Arduino с AS5600
+  port: "COM3"
+  baudrate: 115200
+  # Пауза после открытия порта (сброс Arduino), мс
+  wait_after_connect_ms: 4000
+  # Префикс строки протокола: "AS5600:deg,raw,agc,mag,status"
+  protocol_prefix: "AS5600:"
+
+  # Значения по умолчанию для панели управления
+  defaults:
+    # Коэффициент сглаживания (0.01–0.99). Меньше → плавнее.
+    smoothing: 0.30
+    # Масштаб: 1.0 = 1° датчика → 1° сустава
+    scale: 1.0
+    # Инверсия направления вращения
+    invert: false
+    # Индекс сустава по умолчанию (0=J1 … 5=J6)
+    joint_index: 0
+
+
+# ─── Камера ──────────────────────────────────────────────────
+camera:
+  # Индекс камеры OpenCV (0 — первая)
+  default_index: 0
+  # Использовать виртуальную камеру из MuJoCo
+  use_virtual: false
+  # Задержка между кадрами (мс)
+  frame_delay_ms: 30
+
+
+# ─── Детекция объектов ───────────────────────────────────────
+detection:
+  # Минимальная площадь контура (пиксели²)
+  min_area: 500
+  show_contours: true
+  show_bounding_boxes: true
+
+  # Параметры предобработки изображения
+  processing:
+    blur_kernel: [5, 5]
+    morph_kernel_size: 7
+    morph_iterations: 2
+
+  # Цвета для детекции (HSV-диапазоны, BGR для рисования)
+  colors:
+    Красный:
+      enabled: true
+      hsv_ranges:
+        - lower: [0, 100, 100]
+          upper: [10, 255, 255]
+        - lower: [160, 100, 100]
+          upper: [180, 255, 255]
+      draw_bgr: [0, 0, 255]
+
+    Зелёный:
+      enabled: true
+      hsv_ranges:
+        - lower: [35, 80, 80]
+          upper: [85, 255, 255]
+      draw_bgr: [0, 255, 0]
+
+    Синий:
+      enabled: true
+      hsv_ranges:
+        - lower: [100, 80, 80]
+          upper: [130, 255, 255]
+      draw_bgr: [255, 0, 0]
+
+    Жёлтый:
+      enabled: true
+      hsv_ranges:
+        - lower: [20, 100, 100]
+          upper: [35, 255, 255]
+      draw_bgr: [0, 255, 255]
+
+
+# ─── GUI ─────────────────────────────────────────────────────
+gui:
+  font_monospace: "Consolas"
+  font_size: 13
+  # Подписи осей для ручного управления
+  axis_labels: ["J1 Base", "J2 ShldP", "J3 ShldR",                 # ← ИСПРАВЛЕНО
+                "J4 Elbow", "J5 ForeR", "J6 Wrist"]
+  # Подписи координат TCP
+  tcp_labels: ["X", "Y", "Z", "Rx", "Ry", "Rz"]

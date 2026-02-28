@@ -28,7 +28,7 @@ except ImportError:
 #  Значения по умолчанию (единственный источник истины)
 # ═══════════════════════════════════════════════════════════════
 DEFAULT_CONFIG = {
-    # ── Приложение ──
+    # ── Приложение ── (без изменений)
     "application": {
         "window_title": "Управление роботом — Реальный / MuJoCo + AS5600",
         "window_x": 100,
@@ -38,13 +38,13 @@ DEFAULT_CONFIG = {
         "update_interval_ms": 200,
     },
 
-    # ── Логирование ──
+    # ── Логирование ── (без изменений)
     "logging": {
         "file": "robot_logs.txt",
         "max_entries": 1000,
     },
 
-    # ── Робот ──
+    # ── Робот ── (обновлён xml_path)
     "robot": {
         "default_mode": "simulation",
         "real": {
@@ -52,7 +52,7 @@ DEFAULT_CONFIG = {
             "baudrate": 115200,
         },
         "simulation": {
-            "xml_path": "",
+            "xml_path": "mujoco/rooky_arm.xml",       # ← путь к модели
         },
         "movement": {
             "default_step": 5,
@@ -61,7 +61,7 @@ DEFAULT_CONFIG = {
         "home_position_deg": [0, 0, 0, 0, 0, 0],
     },
 
-    # ── MuJoCo ──
+    # ── MuJoCo ── (обновлены камеры)
     "mujoco": {
         "rendering": {
             "fps": 25,
@@ -70,28 +70,69 @@ DEFAULT_CONFIG = {
         },
         "cameras": {
             "overview": "overview_cam",
-            "hand": "hand_cam",
+            "work":     "work_cam",
         },
         "timestep": 0.002,
     },
 
-    # ── Суставы ──
+    # ── Суставы ── (ПОЛНОСТЬЮ ПЕРЕПИСАНО под rooky_arm)
+    #   mujoco_name     — имя joint в XML
+    #   mujoco_actuator — имя position-актуатора в XML
     "joints": [
-        {"name": "J1", "mujoco_name": "joint1", "min_deg": -180, "max_deg": 180,
-         "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False}},
-        {"name": "J2", "mujoco_name": "joint2", "min_deg": -120, "max_deg": 120,
-         "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False}},
-        {"name": "J3", "mujoco_name": "joint3", "min_deg": -150, "max_deg": 150,
-         "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False}},
-        {"name": "J4", "mujoco_name": "joint4", "min_deg": -180, "max_deg": 180,
-         "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False}},
-        {"name": "J5", "mujoco_name": "joint5", "min_deg": -120, "max_deg": 120,
-         "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False}},
-        {"name": "J6", "mujoco_name": "joint6", "min_deg": -360, "max_deg": 360,
-         "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False}},
+        {
+            "name": "J1", "label": "Base Pitch",
+            "mujoco_name": "J1_base_pitch",
+            "mujoco_actuator": "motor_J1",
+            "min_deg": -80, "max_deg": 80,
+            "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False},
+        },
+        {
+            "name": "J2", "label": "Shoulder Pitch",
+            "mujoco_name": "J2_shoulder_pitch",
+            "mujoco_actuator": "motor_J2_pitch",
+            "min_deg": -41.5, "max_deg": 41.5,
+            "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False},
+        },
+        {
+            "name": "J3", "label": "Shoulder Roll",
+            "mujoco_name": "J2_shoulder_roll",
+            "mujoco_actuator": "motor_J2_roll",
+            "min_deg": -86.5, "max_deg": 86.5,
+            "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False},
+        },
+        {
+            "name": "J4", "label": "Elbow Pitch",
+            "mujoco_name": "J3_elbow_pitch",
+            "mujoco_actuator": "motor_J3_pitch",
+            "min_deg": -40, "max_deg": 40,
+            "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False},
+        },
+        {
+            "name": "J5", "label": "Forearm Roll",
+            "mujoco_name": "J3_forearm_roll",
+            "mujoco_actuator": "motor_J3_roll",
+            "min_deg": -86, "max_deg": 86,
+            "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False},
+        },
+        {
+            "name": "J6", "label": "Wrist Pitch",
+            "mujoco_name": "J4_wrist_pitch",
+            "mujoco_actuator": "motor_J4_wrist",
+            "min_deg": -25.75, "max_deg": 25.75,
+            "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False},
+        },
     ],
 
-    # ── Датчик AS5600 ──
+    # ── Схват (НОВАЯ секция) ──
+    "gripper": {
+        "mujoco_joint":    "J5_grip",
+        "mujoco_actuator": "motor_J5_grip",
+        "type":            "hinge",       # hinge (рад) / slide (м)
+        "open_rad":         0.0,          # data.ctrl при открытом схвате
+        "close_rad":        1.300,        # data.ctrl при закрытом схвате
+    },
+
+    # ── Датчик AS5600 ── (без изменений)
     "sensor": {
         "port": "COM3",
         "baudrate": 115200,
@@ -105,14 +146,14 @@ DEFAULT_CONFIG = {
         },
     },
 
-    # ── Камера ──
+    # ── Камера ── (без изменений)
     "camera": {
         "default_index": 0,
         "use_virtual": False,
         "frame_delay_ms": 30,
     },
 
-    # ── Детекция ──
+    # ── Детекция ── (без изменений)
     "detection": {
         "min_area": 500,
         "show_contours": True,
@@ -133,31 +174,39 @@ DEFAULT_CONFIG = {
             },
             "Зелёный": {
                 "enabled": True,
-                "hsv_ranges": [{"lower": [35, 80, 80], "upper": [85, 255, 255]}],
+                "hsv_ranges": [
+                    {"lower": [35, 80, 80], "upper": [85, 255, 255]},
+                ],
                 "draw_bgr": [0, 255, 0],
             },
             "Синий": {
                 "enabled": True,
-                "hsv_ranges": [{"lower": [100, 80, 80], "upper": [130, 255, 255]}],
+                "hsv_ranges": [
+                    {"lower": [100, 80, 80], "upper": [130, 255, 255]},
+                ],
                 "draw_bgr": [255, 0, 0],
             },
             "Жёлтый": {
                 "enabled": True,
-                "hsv_ranges": [{"lower": [20, 100, 100], "upper": [35, 255, 255]}],
+                "hsv_ranges": [
+                    {"lower": [20, 100, 100], "upper": [35, 255, 255]},
+                ],
                 "draw_bgr": [0, 255, 255],
             },
         },
     },
 
-    # ── GUI ──
+    # ── GUI ── (обновлены метки)
     "gui": {
         "font_monospace": "Consolas",
         "font_size": 13,
-        "axis_labels": ["J1/X", "J2/Y", "J3/Z", "J4/Rx", "J5/Ry", "J6/Rz"],
+        "axis_labels": [
+            "J1 Base",   "J2 ShldP", "J3 ShldR",
+            "J4 Elbow",  "J5 ForeR", "J6 Wrist",
+        ],
         "tcp_labels": ["X", "Y", "Z", "Rx", "Ry", "Rz"],
     },
 }
-
 
 # ═══════════════════════════════════════════════════════════════
 #  Вспомогательные функции
