@@ -91,7 +91,7 @@ DEFAULT_CONFIG = {
             "name": "J2", "label": "Shoulder Pitch",
             "mujoco_name": "J2_shoulder_pitch",
             "mujoco_actuator": "motor_J2_pitch",
-            "min_deg": -41.5, "max_deg": 41.5,
+            "min_deg": -81.5, "max_deg": 81.5,
             "gui_invert": True,                    # ← + = ОТ стола
             "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False},
         },

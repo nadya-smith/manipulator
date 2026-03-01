@@ -2,9 +2,6 @@
 <!--
   Rooky Arm — 7-DOF (6 суставов + 1 схват) для Robot Control.
 
-  Механика: БЕЗ ИЗМЕНЕНИЙ (оригинал пользователя).
-  Добавлено: tcp-сайт, камеры, объекты сцены, сенсоры.
-
   Именование (для mujoco_robot.py):
     Суставы:   J1_base_pitch … J4_wrist_pitch, J5_grip
     Актуаторы: motor_J1 … motor_J4_wrist, motor_J5_grip
@@ -48,7 +45,19 @@
     <geom name="leg_BR" type="cylinder" size="0.02 0.44"
           pos="-0.35  0.25 0.44" rgba="0.45 0.28 0.14 1"/>
 
-    <!-- ======== КРАСНЫЙ БОКС (основание) ======== -->
+    <!-- ★★★ БОКС-ПОДСТАВКА для деталей ★★★
+         50×50 см площадка, высота 40 см, стоит на полу.
+         Перед рукой (−Y сторона), 40 см от края стола.
+         Край стола:     y = −0.30
+         Ближний край:   y = −0.70
+         Центр бокса:    y = −0.95
+         Верхняя грань:  z =  0.40                        -->
+    <geom name="platform_box" type="box"
+          size="0.25 0.25 0.20"
+          pos="0 -0.95 0.20"
+          rgba="0.50 0.50 0.55 1" mass="20"/>
+
+    <!-- ======== КРАСНЫЙ БОКС (основание руки) ======== -->
     <body name="base_mount" pos="0 -0.25 0.97">
       <geom name="base_box" type="box" size="0.05 0.05 0.05"
             rgba="0.90 0.10 0.10 1" mass="2"/>
@@ -228,50 +237,50 @@
       </body>
     </body>
 
-    <!-- ★★★ ОБЪЕКТЫ СЦЕНЫ (ДОБАВЛЕНО) ★★★ -->
-    <!-- Все объекты стоят на столешнице (верхняя грань z = 0.92) -->
+    <!-- ★★★ ОБЪЕКТЫ СЦЕНЫ — на боксе-подставке ★★★
+         Верхняя грань бокса: z = 0.40
+         Площадка: x ∈ [−0.25, 0.25],  y ∈ [−1.20, −0.70] -->
 
-    <body name="red_cube" pos="0.20 0.10 0.945">
+    <body name="red_cube" pos="0.10 -0.85 0.425">
       <freejoint/>
       <geom name="red_cube_geom" type="box"
             size="0.025 0.025 0.025" mass="0.1"
             rgba="1 0 0 1"/>
     </body>
 
-    <body name="green_cylinder" pos="-0.15 0.12 0.945">
+    <body name="green_cylinder" pos="-0.08 -1.05 0.425">
       <freejoint/>
       <geom name="green_cyl_geom" type="cylinder"
             size="0.02 0.025" mass="0.08"
             rgba="0 0.8 0 1"/>
     </body>
 
-    <body name="blue_sphere" pos="0.10 -0.05 0.95">
+    <body name="blue_sphere" pos="0.05 -0.95 0.43">
       <freejoint/>
       <geom name="blue_sph_geom" type="sphere"
             size="0.03" mass="0.05"
             rgba="0 0 1 1"/>
     </body>
 
-    <body name="yellow_cube" pos="-0.10 -0.10 0.935">
+    <body name="yellow_cube" pos="-0.10 -0.80 0.415">
       <freejoint/>
       <geom name="yellow_cube_geom" type="box"
             size="0.015 0.015 0.015" mass="0.06"
             rgba="1 1 0 1"/>
     </body>
 
-    <!-- ★★★ КАМЕРЫ (ДОБАВЛЕНО) ★★★ -->
-
-    <!-- Обзорная: вид сбоку-сверху на всю сцену -->
+    <!-- ★★★ КАМЕРЫ ★★★ -->
+    <!-- Обзорная: вид сбоку-сверху, охватывает стол + бокс -->
     <camera name="overview_cam"
             pos="1.5 -1.5 1.8"
             xyaxes="0.63 0.78 0 -0.35 0.28 0.89"
-            fovy="50"/>
+            fovy="55"/>
 
-    <!-- Рабочая: имитация камеры над столом (вид сверху) -->
+    <!-- Рабочая: вид сверху на бокс с деталями -->
     <camera name="work_cam"
-            pos="0 -0.35 2.0"
+            pos="0 -0.95 1.8"
             xyaxes="1 0 0 0 1 0"
-            fovy="60"/>
+            fovy="40"/>
 
   </worldbody>
 
@@ -283,23 +292,17 @@
   -->
 <actuator>
     <position name="motor_J1" joint="J1_base_pitch"
-              kp="200" ctrlrange="-80 80" ctrllimited="true"/>
-
+              kp="500" ctrlrange="-80 80" ctrllimited="true"/>
     <position name="motor_J2_pitch" joint="J2_shoulder_pitch"
-              kp="300" ctrlrange="-41.5 41.5" ctrllimited="true"/>
-
+              kp="500" ctrlrange="-81.5 81.5" ctrllimited="true"/>
     <position name="motor_J2_roll" joint="J2_shoulder_roll"
-              kp="200" ctrlrange="-86.5 86.5" ctrllimited="true"/>
-
+              kp="500" ctrlrange="-86.5 86.5" ctrllimited="true"/>
     <position name="motor_J3_pitch" joint="J3_elbow_pitch"
-              kp="250" ctrlrange="-40 40" ctrllimited="true"/>
-
+              kp="500" ctrlrange="-40 40" ctrllimited="true"/>
     <position name="motor_J3_roll" joint="J3_forearm_roll"
-              kp="150" ctrlrange="-86 86" ctrllimited="true"/>
-
+              kp="500" ctrlrange="-86 86" ctrllimited="true"/>
     <position name="motor_J4_wrist" joint="J4_wrist_pitch"
               kp="100" ctrlrange="-25.75 25.75" ctrllimited="true"/>
-
     <position name="motor_J5_grip" joint="J5_grip"
               kp="80" ctrlrange="-74.5 74.5" ctrllimited="true"/>
 </actuator>
