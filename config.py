@@ -91,7 +91,7 @@ DEFAULT_CONFIG = {
             "name": "J2", "label": "Shoulder Pitch",
             "mujoco_name": "J2_shoulder_pitch",
             "mujoco_actuator": "motor_J2_pitch",
-            "min_deg": -41.5, "max_deg": 41.5,
+            "min_deg": -81.5, "max_deg": 81.5,
             "gui_invert": True,                    # ← + = ОТ стола
             "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False},
         },
@@ -107,7 +107,7 @@ DEFAULT_CONFIG = {
             "name": "J4", "label": "Elbow Pitch",
             "mujoco_name": "J3_elbow_pitch",
             "mujoco_actuator": "motor_J3_pitch",
-            "min_deg": -40, "max_deg": 40,
+            "min_deg": -85, "max_deg": 85,
             "gui_invert": True,                    # ← аналогично плечу
             "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False},
         },
