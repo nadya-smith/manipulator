@@ -107,7 +107,7 @@ DEFAULT_CONFIG = {
             "name": "J4", "label": "Elbow Pitch",
             "mujoco_name": "J3_elbow_pitch",
             "mujoco_actuator": "motor_J3_pitch",
-            "min_deg": -40, "max_deg": 40,
+            "min_deg": -85, "max_deg": 85,
             "gui_invert": True,                    # ← аналогично плечу
             "encoder": {"scale": 1.0, "offset_deg": 0.0, "invert": False},
         },

@@ -73,7 +73,7 @@
                   diaginertia="0.001 0.001 0.0004"/>
 
         <joint name="J1_base_pitch" type="hinge"
-               axis="0 1 0" range="-80 80" damping="3"/>
+               axis="0 1 0" range="-133 133" damping="3"/>
 
         <geom name="J1_hinge_viz" type="cylinder"
               pos="0 -0.035 0"
@@ -91,7 +91,7 @@
                     diaginertia="0.0005 0.0005 0.0003"/>
 
           <joint name="J2_shoulder_pitch" type="hinge"
-                 axis="1 0 0" range="-41.5 41.5" damping="3"/>
+                 axis="1 0 0" range="-81.5 81.5" damping="3"/>
 
           <geom name="J2a_hinge_viz" type="cylinder"
                 size="0.035 0.030" euler="0 90 0"
@@ -125,7 +125,7 @@
                         diaginertia="0.0005 0.0005 0.0003"/>
 
               <joint name="J3_elbow_pitch" type="hinge"
-                     axis="1 0 0" range="-40 40" damping="3"/>
+                     axis="1 0 0" range="-85 85" damping="3"/>
 
               <geom name="J3a_hinge_viz" type="cylinder"
                     size="0.035 0.030" euler="0 90 0"
@@ -292,13 +292,13 @@
   -->
 <actuator>
     <position name="motor_J1" joint="J1_base_pitch"
-              kp="500" ctrlrange="-80 80" ctrllimited="true"/>
+              kp="500" ctrlrange="-25 133" ctrllimited="true"/>
     <position name="motor_J2_pitch" joint="J2_shoulder_pitch"
               kp="500" ctrlrange="-81.5 81.5" ctrllimited="true"/>
     <position name="motor_J2_roll" joint="J2_shoulder_roll"
               kp="500" ctrlrange="-86.5 86.5" ctrllimited="true"/>
     <position name="motor_J3_pitch" joint="J3_elbow_pitch"
-              kp="500" ctrlrange="-40 40" ctrllimited="true"/>
+              kp="500" ctrlrange="0 80" ctrllimited="true"/>
     <position name="motor_J3_roll" joint="J3_forearm_roll"
               kp="500" ctrlrange="-86 86" ctrllimited="true"/>
     <position name="motor_J4_wrist" joint="J4_wrist_pitch"
